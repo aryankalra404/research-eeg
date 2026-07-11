@@ -1,0 +1,225 @@
+"""
+Phase 2: trains and evaluates all six baseline models on REAL data only
+(no GAN augmentation yet -- this is the paper's control condition).
+
+Uses subject-independent GroupKFold cross-validation, as locked in
+config.SPLIT_PROTOCOL / config.N_FOLDS, so results here are directly
+comparable to the Phase 5 augmented-training run later (same folds must
+be reused -- see note at bottom).
+
+Usage:
+    python -m src.train_baseline                  # all 6 models, all folds
+    python -m src.train_baseline --model eegnet    # just one model, for a quick check
+    python -m src.train_baseline --epochs 5        # override epoch count for a smoke test
+"""
+
+import argparse
+import json
+import time
+
+import numpy as np
+import torch
+import torch.nn as nn
+from sklearn.model_selection import GroupKFold
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
+from torch.utils.data import DataLoader
+
+from . import config
+from .datasets import EEGWindowDataset
+from .labeling import build_dataset
+from .models import MODEL_REGISTRY, get_model
+from .preprocessing import load_processed
+
+
+def set_seed(seed: int = config.RANDOM_SEED):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def train_one_fold(model_name: str, X_train, y_train, X_val, y_val,
+                    device, epochs: int, batch_size: int = 64, lr: float = 1e-3):
+    n_timepoints = X_train.shape[1]
+    n_channels = X_train.shape[2]
+
+    model = get_model(model_name, n_channels=n_channels, n_timepoints=n_timepoints, n_classes=2)
+    model.to(device)
+
+    train_loader = DataLoader(EEGWindowDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(EEGWindowDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
+
+    # Class-weighted loss to counter the ~38.5/61.5 imbalance we measured in Phase 1
+    class_counts = np.bincount(y_train, minlength=2)
+    class_weights = torch.tensor(
+        [len(y_train) / (2 * c) if c > 0 else 0.0 for c in class_counts], dtype=torch.float32
+    ).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    best_val_f1 = -1.0
+    best_state = None
+
+    for epoch in range(epochs):
+        model.train()
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+
+        # Quick validation each epoch to track best checkpoint
+        model.eval()
+        val_preds, val_true = [], []
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb = xb.to(device)
+                logits = model(xb)
+                preds = logits.argmax(dim=1).cpu().numpy()
+                val_preds.extend(preds)
+                val_true.extend(yb.numpy())
+        val_f1 = f1_score(val_true, val_preds, average="macro", zero_division=0)
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+    # Reload best checkpoint for final metrics
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    model.eval()
+    val_preds, val_true = [], []
+    with torch.no_grad():
+        for xb, yb in val_loader:
+            xb = xb.to(device)
+            logits = model(xb)
+            preds = logits.argmax(dim=1).cpu().numpy()
+            val_preds.extend(preds)
+            val_true.extend(yb.numpy())
+
+    metrics = {
+        "accuracy": accuracy_score(val_true, val_preds),
+        "f1_macro": f1_score(val_true, val_preds, average="macro", zero_division=0),
+        "precision_macro": precision_score(val_true, val_preds, average="macro", zero_division=0),
+        "recall_macro": recall_score(val_true, val_preds, average="macro", zero_division=0),
+        "confusion_matrix": confusion_matrix(val_true, val_preds).tolist(),
+    }
+    return metrics, model
+
+
+def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size: int = 64):
+    set_seed()
+    device = config.get_device()
+    print(f"Using device: {device}")
+
+    print("Loading processed data...")
+    processed = load_processed()
+    X, y, groups = build_dataset(processed)
+    print(f"X: {X.shape}, y: {y.shape}, groups: {len(set(groups))} unique subjects")
+
+    gkf = GroupKFold(n_splits=n_folds)
+    # Fixed fold assignment -- IMPORTANT: reuse this exact split in Phase 5
+    # (augmented training) so baseline vs augmented comparisons are apples-to-apples.
+    folds = list(gkf.split(X, y, groups))
+
+    all_results = {}
+    for model_name in model_names:
+        print(f"\n{'='*60}\nModel: {model_name}\n{'='*60}")
+        fold_metrics = []
+        t0 = time.time()
+
+        for fold_i, (train_idx, val_idx) in enumerate(folds):
+            X_train, y_train = X[train_idx], y[train_idx]
+            X_val, y_val = X[val_idx], y[val_idx]
+            val_subjects = sorted(set(groups[val_idx].tolist()))
+
+            print(f"  Fold {fold_i+1}/{n_folds} (held-out subjects: {val_subjects}) "
+                  f"train={len(train_idx)} val={len(val_idx)}...")
+
+            metrics, _ = train_one_fold(
+                model_name, X_train, y_train, X_val, y_val,
+                device=device, epochs=epochs, batch_size=batch_size,
+            )
+            print(f"    acc={metrics['accuracy']:.3f} f1_macro={metrics['f1_macro']:.3f}")
+            fold_metrics.append(metrics)
+
+        elapsed = time.time() - t0
+        acc_mean = np.mean([m["accuracy"] for m in fold_metrics])
+        acc_std = np.std([m["accuracy"] for m in fold_metrics])
+        f1_mean = np.mean([m["f1_macro"] for m in fold_metrics])
+        f1_std = np.std([m["f1_macro"] for m in fold_metrics])
+
+        print(f"\n  {model_name} SUMMARY ({elapsed:.1f}s):")
+        print(f"    accuracy = {acc_mean:.3f} +/- {acc_std:.3f}")
+        print(f"    f1_macro = {f1_mean:.3f} +/- {f1_std:.3f}")
+
+        all_results[model_name] = {
+            "fold_metrics": fold_metrics,
+            "accuracy_mean": acc_mean,
+            "accuracy_std": acc_std,
+            "f1_macro_mean": f1_mean,
+            "f1_macro_std": f1_std,
+            "elapsed_seconds": elapsed,
+        }
+
+    return all_results
+
+
+def save_results(results: dict, out_path=None):
+    """
+    Merges new results into the existing results file rather than overwriting
+    it, so running one model at a time (e.g. across multiple sessions) doesn't
+    destroy previously saved results for other models.
+    """
+    if out_path is None:
+        out_path = config.OUTPUTS_DIR / "baseline_results.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = {}
+    if out_path.exists():
+        with open(out_path, "r") as f:
+            try:
+                existing = json.load(f)
+            except json.JSONDecodeError:
+                print(f"  [warn] existing {out_path} was invalid JSON -- overwriting it.")
+                existing = {}
+
+    existing.update(results)  # new results for a model overwrite that model's old entry only
+
+    with open(out_path, "w") as f:
+        json.dump(existing, f, indent=2)
+    print(f"\nSaved/merged results to {out_path} (now contains: {list(existing.keys())})")
+
+
+def print_summary_table(results: dict):
+    print(f"\n{'='*70}")
+    print(f"{'Model':<16} {'Accuracy':<18} {'F1 (macro)':<18}")
+    print(f"{'-'*70}")
+    for name, r in results.items():
+        acc = f"{r['accuracy_mean']:.3f} +/- {r['accuracy_std']:.3f}"
+        f1 = f"{r['f1_macro_mean']:.3f} +/- {r['f1_macro_std']:.3f}"
+        print(f"{name:<16} {acc:<18} {f1:<18}")
+    print(f"{'='*70}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, default=None,
+                         help="Run just one model (e.g. eegnet). Default: all 6.")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--folds", type=int, default=config.N_FOLDS)
+    parser.add_argument("--batch_size", type=int, default=64)
+    args = parser.parse_args()
+
+    model_names = [args.model] if args.model else list(MODEL_REGISTRY.keys())
+
+    results = run_all(model_names, epochs=args.epochs, n_folds=args.folds, batch_size=args.batch_size)
+    save_results(results)
+
+    # Reload the merged file so the printed summary shows every model run so far,
+    # not just the ones from this invocation.
+    results_path = config.OUTPUTS_DIR / "baseline_results.json"
+    with open(results_path, "r") as f:
+        all_results_so_far = json.load(f)
+    print_summary_table(all_results_so_far)
