@@ -1,0 +1,40 @@
+# Data (large, regenerable from raw source or the pipeline itself)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Model checkpoints (large, regenerable from training)
+models/*.pt
+models/*.pth
+models/*.h5
+models/*.ckpt
+!models/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Environment secrets (if you ever add API keys, wandb, etc.)
+.env
