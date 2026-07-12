@@ -63,6 +63,45 @@ def baseline_correct(stimuli: np.ndarray, baseline: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Artifact rejection
+# ---------------------------------------------------------------------------
+def reject_artifact_windows(
+    windows: np.ndarray,
+    mad_multiplier: float = config.ARTIFACT_REJECTION_MAD_MULTIPLIER,
+) -> np.ndarray:
+    """
+    Flags windows containing amplitude artifacts (eye blinks, muscle noise,
+    electrode pops) using a per-subject adaptive threshold: for each channel,
+    compute the peak-to-peak amplitude of every window, then reject any window
+    where any channel's peak-to-peak exceeds median + mad_multiplier * MAD
+    (median absolute deviation) for that channel.
+
+    This is a simple, fast alternative to full ICA-based artifact removal --
+    it won't remove artifacts *within* a kept window, only discards windows
+    that are badly contaminated. State this as a limitation vs. full ICA in
+    the paper.
+
+    windows: (N, T, C)
+    Returns: boolean mask of shape (N,), True = keep.
+    """
+    if windows.shape[0] == 0:
+        return np.zeros(0, dtype=bool)
+
+    # Peak-to-peak amplitude per window, per channel: (N, C)
+    ptp = windows.max(axis=1) - windows.min(axis=1)
+
+    keep_mask = np.ones(windows.shape[0], dtype=bool)
+    for c in range(windows.shape[2]):
+        channel_ptp = ptp[:, c]
+        median = np.median(channel_ptp)
+        mad = np.median(np.abs(channel_ptp - median)) + 1e-8
+        threshold = median + mad_multiplier * mad
+        keep_mask &= channel_ptp <= threshold
+
+    return keep_mask
+
+
+# ---------------------------------------------------------------------------
 # Epoching (sliding window)
 # ---------------------------------------------------------------------------
 def sliding_window_epochs(
@@ -149,6 +188,19 @@ def process_subject(subject: SubjectData) -> ProcessedSubject:
 
     windows_concat = np.concatenate(all_windows, axis=0)  # (N, T, C)
     trial_idx_concat = np.concatenate(all_trial_idx, axis=0)  # (N,)
+
+    n_before = windows_concat.shape[0]
+    if config.APPLY_ARTIFACT_REJECTION:
+        keep_mask = reject_artifact_windows(windows_concat)
+        windows_concat = windows_concat[keep_mask]
+        trial_idx_concat = trial_idx_concat[keep_mask]
+        n_after = windows_concat.shape[0]
+        n_rejected = n_before - n_after
+        print(f"  subject {subject.subject_id}: rejected {n_rejected}/{n_before} "
+              f"windows ({100*n_rejected/n_before:.1f}%) for amplitude artifacts")
+        if n_after < config.ARTIFACT_REJECTION_MIN_WINDOWS_WARN:
+            print(f"  [warn] subject {subject.subject_id} has only {n_after} windows "
+                  f"remaining after artifact rejection -- check this subject's data quality.")
 
     windows_norm = zscore_normalize(windows_concat)
 

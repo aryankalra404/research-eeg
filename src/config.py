@@ -45,6 +45,16 @@ WINDOW_SAMPLES = int(WINDOW_SECONDS * EEG_SAMPLING_RATE)  # 512 samples per wind
 # Baseline correction: subtract mean baseline signal (per-channel) from stimuli
 APPLY_BASELINE_CORRECTION = True
 
+# Artifact rejection (amplitude-based, applied per-window after epoching,
+# before normalization). Uses a per-subject adaptive threshold rather than a
+# fixed microvolt cutoff, since DREAMER's raw units/scale aren't documented
+# in the readme -- median + k*MAD is robust to that ambiguity.
+APPLY_ARTIFACT_REJECTION = True
+ARTIFACT_REJECTION_MAD_MULTIPLIER = 5.0  # windows with any channel's peak-to-peak
+                                          # amplitude beyond median + k*MAD are dropped
+ARTIFACT_REJECTION_MIN_WINDOWS_WARN = 20  # warn if a subject drops below this many
+                                           # windows after rejection (too aggressive / bad data)
+
 # Normalization
 NORMALIZATION = "per_subject_zscore"  # applied per-channel, per-subject
 
