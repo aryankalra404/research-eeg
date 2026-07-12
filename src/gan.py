@@ -24,6 +24,23 @@ LATENT_DIM = 100
 LABEL_EMBED_DIM = 8  # small embedding for binary label, broadcast across time
 
 
+def weights_init(m):
+    """
+    DCGAN-style initialization, carried through in the official WGAN-GP paper
+    (Gulrajani et al. 2017) and virtually all reference implementations.
+    GANs are known to be sensitive to init; PyTorch's default init is not
+    what the literature actually uses here.
+    """
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find("GroupNorm") != -1 or classname.find("BatchNorm") != -1:
+        if m.weight is not None:
+            nn.init.normal_(m.weight.data, 1.0, 0.02)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+
+
 class Generator(nn.Module):
     def __init__(self, n_channels: int = 14, n_timepoints: int = 512,
                  latent_dim: int = LATENT_DIM, n_classes: int = 2,
@@ -43,8 +60,14 @@ class Generator(nn.Module):
             ]
             if not final:
                 layers += [nn.BatchNorm1d(out_c), nn.ReLU(inplace=True)]
-            else:
-                layers += [nn.Tanh()]  # bounded output, matches z-scored real data range reasonably
+            # NOTE: no final activation (e.g. Tanh) here -- real data is
+            # z-scored (mean 0, std ~1) but NOT bounded to [-1,1] (real
+            # windows commonly range well beyond +/-3). A bounded final
+            # activation like Tanh structurally caps the generator's output
+            # range, making it impossible to match the real distribution no
+            # matter how long you train -- this was causing severe waveform
+            # saturation and mode-collapse-like t-SNE separation. Linear
+            # output is correct for unbounded, roughly-Gaussian z-scored data.
             return nn.Sequential(*layers)
 
         # 32 -> 64 -> 128 -> 256 -> 512  (4 upsampling steps)
@@ -77,7 +100,16 @@ class Critic(nn.Module):
         def down_block(in_c, out_c, norm=True):
             layers = [nn.Conv1d(in_c, out_c, kernel_size=4, stride=2, padding=1)]
             if norm:
-                layers += [nn.InstanceNorm1d(out_c, affine=True)]
+                # GroupNorm(num_groups=1, ...) normalizes jointly across all
+                # channels+timesteps per sample -- this is the actual "Layer
+                # Normalization" the official WGAN-GP paper (Gulrajani et al.
+                # 2017) specifies for the critic, NOT InstanceNorm (which
+                # normalizes each channel independently and is a different,
+                # weaker form of per-sample normalization). Both preserve the
+                # per-sample independence the gradient penalty needs (unlike
+                # BatchNorm), but GroupNorm(1, C) is the one that actually
+                # matches the reference implementation.
+                layers += [nn.GroupNorm(1, out_c)]
             layers += [nn.LeakyReLU(0.2, inplace=True)]
             return nn.Sequential(*layers)
 

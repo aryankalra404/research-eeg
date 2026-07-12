@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 
 from . import config
 from .datasets import EEGWindowDataset
-from .gan import Generator, Critic, gradient_penalty, LATENT_DIM
+from .gan import Generator, Critic, gradient_penalty, LATENT_DIM, weights_init
 from .labeling import build_dataset
 from .preprocessing import load_processed
 
@@ -36,10 +36,14 @@ N_CRITIC = 5  # critic updates per generator update (standard WGAN-GP ratio)
 LAMBDA_GP = 10.0
 
 
+import time
+
 def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
     n_timepoints, n_channels = X_train.shape[1], X_train.shape[2]
     gen = Generator(n_channels=n_channels, n_timepoints=n_timepoints).to(device)
     crit = Critic(n_channels=n_channels, n_timepoints=n_timepoints).to(device)
+    gen.apply(weights_init)
+    crit.apply(weights_init)
 
     opt_gen = optim.Adam(gen.parameters(), lr=lr, betas=(0.5, 0.9))
     opt_crit = optim.Adam(crit.parameters(), lr=lr, betas=(0.5, 0.9))
@@ -49,7 +53,9 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
 
     history = {"critic_loss": [], "gen_loss": [], "wasserstein_estimate": []}
 
+    epoch_times = []
     for epoch in range(epochs):
+        t0 = time.time()
         epoch_critic_loss, epoch_gen_loss, epoch_wdist = [], [], []
 
         for real, labels in loader:
@@ -89,10 +95,16 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
         history["gen_loss"].append(np.mean(epoch_gen_loss))
         history["wasserstein_estimate"].append(np.mean(epoch_wdist))
 
-        if (epoch + 1) % 10 == 0 or epoch == 0:
+        epoch_times.append(time.time() - t0)
+        avg_epoch_time = np.mean(epoch_times[-5:])  # rolling average, last 5 epochs
+        remaining = epochs - (epoch + 1)
+        eta_seconds = remaining * avg_epoch_time
+
+        if (epoch + 1) <= 3 or (epoch + 1) % 10 == 0:
             print(f"  epoch {epoch+1}/{epochs}  critic_loss={history['critic_loss'][-1]:.3f}  "
                   f"gen_loss={history['gen_loss'][-1]:.3f}  "
-                  f"wasserstein_est={history['wasserstein_estimate'][-1]:.3f}")
+                  f"wasserstein_est={history['wasserstein_estimate'][-1]:.3f}  "
+                  f"[{avg_epoch_time:.1f}s/epoch, ETA {eta_seconds/60:.1f} min]")
 
     return gen, crit, history
 
