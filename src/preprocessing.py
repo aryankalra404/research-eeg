@@ -41,9 +41,19 @@ def _notch_filter(signal: np.ndarray, fs: float) -> np.ndarray:
 
 
 def filter_signal(signal: np.ndarray, fs: float = config.EEG_SAMPLING_RATE) -> np.ndarray:
-    """Apply bandpass then notch filter. signal shape: (M, C)."""
+    """
+    Apply bandpass, and (only if relevant) a mains-frequency notch filter.
+
+    NOTE: with BANDPASS_HIGH_HZ = 45.0 and NOTCH_FREQ_HZ = 50.0, the bandpass
+    stage already removes everything at/above 50Hz, so a 50Hz notch applied
+    afterwards is a no-op -- there's nothing left there to notch out. We only
+    apply the notch when it actually sits inside the passband; otherwise we
+    skip it rather than silently doing nothing (and print a warning once via
+    config validation) so the pipeline isn't quietly running dead code.
+    """
     filtered = _bandpass_filter(signal, fs)
-    filtered = _notch_filter(filtered, fs)
+    if config.BANDPASS_LOW_HZ < config.NOTCH_FREQ_HZ < config.BANDPASS_HIGH_HZ:
+        filtered = _notch_filter(filtered, fs)
     return filtered.astype(np.float32)
 
 

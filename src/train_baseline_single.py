@@ -24,7 +24,7 @@ from . import config
 from .labeling import build_dataset
 from .preprocessing import load_processed
 from .split import load_split, apply_split
-from .train_baseline import train_one_fold, set_seed
+from .train_baseline import train_and_evaluate, split_train_val_by_subject, set_seed
 
 
 def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64):
@@ -37,10 +37,25 @@ def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64
 
     split_info = load_split()
     X_train, y_train, X_test, y_test = apply_split(X, y, groups, split_info)
+    # Keep the subject IDs for the training rows too, so we can carve an inner
+    # validation split by subject for checkpoint selection (see train_baseline.py) --
+    # apply_split doesn't return this, so we rebuild the same mask here.
+    train_mask = np.isin(groups, list(split_info["train_subjects"]))
+    groups_train = groups[train_mask]
     print(f"Train: {X_train.shape[0]} windows ({len(split_info['train_subjects'])} subjects)")
     print(f"Test:  {X_test.shape[0]} windows ({len(split_info['test_subjects'])} subjects)")
     print(f"Train class balance before augmentation: "
           f"non-stress={int((y_train==0).sum())}, stress={int((y_train==1).sum())}")
+
+    # Carve the inner validation split (by subject) BEFORE any synthetic data
+    # is added. Synthetic windows aren't tied to a real subject, so they must
+    # never be allowed into the validation set used for checkpoint selection --
+    # only into the training portion.
+    inner_train_idx, inner_val_idx = split_train_val_by_subject(X_train, y_train, groups_train)
+    X_tr, y_tr = X_train[inner_train_idx], y_train[inner_train_idx]
+    X_val, y_val = X_train[inner_val_idx], y_train[inner_val_idx]
+    print(f"Inner split for checkpoint selection: train={X_tr.shape[0]} windows, "
+          f"val={X_val.shape[0]} windows (test set of {X_test.shape[0]} windows untouched until final eval)")
 
     condition = "WITHOUT GAN"
     if use_gan:
@@ -55,15 +70,16 @@ def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64
         print(f"Loaded {len(y_synth)} synthetic windows from {synth_path} "
               f"(non-stress={int((y_synth==0).sum())}, stress={int((y_synth==1).sum())})")
 
-        X_train = np.concatenate([X_train, X_synth], axis=0)
-        y_train = np.concatenate([y_train, y_synth], axis=0)
+        # Synthetic data augments ONLY the inner training portion.
+        X_tr = np.concatenate([X_tr, X_synth], axis=0)
+        y_tr = np.concatenate([y_tr, y_synth], axis=0)
         condition = "WITH GAN"
-        print(f"Augmented train set: {X_train.shape[0]} windows "
-              f"(non-stress={int((y_train==0).sum())}, stress={int((y_train==1).sum())})")
+        print(f"Augmented inner-train set: {X_tr.shape[0]} windows "
+              f"(non-stress={int((y_tr==0).sum())}, stress={int((y_tr==1).sum())})")
 
     print(f"\n{'='*60}\n{condition} -- training {model_name}\n{'='*60}")
-    metrics, model = train_one_fold(
-        model_name, X_train, y_train, X_test, y_test,
+    metrics, model = train_and_evaluate(
+        model_name, X_tr, y_tr, X_val, y_val, X_test, y_test,
         device=device, epochs=epochs, batch_size=batch_size,
     )
 

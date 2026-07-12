@@ -20,7 +20,7 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 from torch.utils.data import DataLoader
 
@@ -38,21 +38,48 @@ def set_seed(seed: int = config.RANDOM_SEED):
         torch.cuda.manual_seed_all(seed)
 
 
-def train_one_fold(model_name: str, X_train, y_train, X_val, y_val,
-                    device, epochs: int, batch_size: int = 64, lr: float = 1e-3):
-    n_timepoints = X_train.shape[1]
-    n_channels = X_train.shape[2]
+def split_train_val_by_subject(X, y, groups, val_fraction: float = 0.15,
+                                seed: int = config.RANDOM_SEED):
+    """
+    Carves an INNER validation set out of a training pool, split by subject
+    (never by window), so checkpoint selection never touches the real test
+    set. Returns (train_idx, val_idx) into the arrays passed in.
+
+    Falls back to using all data for both if there are too few subjects to
+    split cleanly (only happens on tiny debug runs, not the real dataset).
+    """
+    n_unique_subjects = len(set(groups.tolist()))
+    if n_unique_subjects < 3:
+        idx = np.arange(len(y))
+        return idx, idx
+
+    gss = GroupShuffleSplit(n_splits=1, test_size=val_fraction, random_state=seed)
+    train_idx, val_idx = next(gss.split(X, y, groups))
+    return train_idx, val_idx
+
+
+def train_and_evaluate(model_name: str, X_tr, y_tr, X_val, y_val, X_test, y_test,
+                        device, epochs: int, batch_size: int = 64, lr: float = 1e-3):
+    """
+    X_tr/y_tr     -- used for gradient updates only
+    X_val/y_val   -- used ONLY to pick the best-epoch checkpoint (never the test set)
+    X_test/y_test -- touched exactly once, after the best checkpoint is loaded,
+                      to produce the metrics that actually get reported
+    """
+    n_timepoints = X_tr.shape[1]
+    n_channels = X_tr.shape[2]
 
     model = get_model(model_name, n_channels=n_channels, n_timepoints=n_timepoints, n_classes=2)
     model.to(device)
 
-    train_loader = DataLoader(EEGWindowDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(EEGWindowDataset(X_tr, y_tr), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(EEGWindowDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(EEGWindowDataset(X_test, y_test), batch_size=batch_size, shuffle=False)
 
     # Class-weighted loss to counter the ~38.5/61.5 imbalance we measured in Phase 1
-    class_counts = np.bincount(y_train, minlength=2)
+    class_counts = np.bincount(y_tr, minlength=2)
     class_weights = torch.tensor(
-        [len(y_train) / (2 * c) if c > 0 else 0.0 for c in class_counts], dtype=torch.float32
+        [len(y_tr) / (2 * c) if c > 0 else 0.0 for c in class_counts], dtype=torch.float32
     ).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -70,7 +97,7 @@ def train_one_fold(model_name: str, X_train, y_train, X_val, y_val,
             loss.backward()
             optimizer.step()
 
-        # Quick validation each epoch to track best checkpoint
+        # Checkpoint selection uses ONLY the inner validation set, never X_test.
         model.eval()
         val_preds, val_true = [], []
         with torch.no_grad():
@@ -85,27 +112,53 @@ def train_one_fold(model_name: str, X_train, y_train, X_val, y_val,
             best_val_f1 = val_f1
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
 
-    # Reload best checkpoint for final metrics
+    # Reload best checkpoint (chosen on val), then evaluate on the TEST set --
+    # this is the ONLY time X_test/y_test are touched.
     if best_state is not None:
         model.load_state_dict(best_state)
     model.eval()
-    val_preds, val_true = [], []
+    test_preds, test_true = [], []
     with torch.no_grad():
-        for xb, yb in val_loader:
+        for xb, yb in test_loader:
             xb = xb.to(device)
             logits = model(xb)
             preds = logits.argmax(dim=1).cpu().numpy()
-            val_preds.extend(preds)
-            val_true.extend(yb.numpy())
+            test_preds.extend(preds)
+            test_true.extend(yb.numpy())
 
     metrics = {
-        "accuracy": accuracy_score(val_true, val_preds),
-        "f1_macro": f1_score(val_true, val_preds, average="macro", zero_division=0),
-        "precision_macro": precision_score(val_true, val_preds, average="macro", zero_division=0),
-        "recall_macro": recall_score(val_true, val_preds, average="macro", zero_division=0),
-        "confusion_matrix": confusion_matrix(val_true, val_preds).tolist(),
+        "accuracy": accuracy_score(test_true, test_preds),
+        "f1_macro": f1_score(test_true, test_preds, average="macro", zero_division=0),
+        "precision_macro": precision_score(test_true, test_preds, average="macro", zero_division=0),
+        "recall_macro": recall_score(test_true, test_preds, average="macro", zero_division=0),
+        "confusion_matrix": confusion_matrix(test_true, test_preds).tolist(),
+        "best_val_f1_at_selection": best_val_f1,  # kept for transparency, not a test-set metric
     }
     return metrics, model
+
+
+# Backwards-compatible alias: some callers (train_baseline_single.py,
+# compare_gan_augmentation.py) still import `train_one_fold`. It now REQUIRES
+# a proper inner validation split rather than reusing the test set for
+# checkpoint selection.
+def train_one_fold(model_name: str, X_train, y_train, X_test, y_test,
+                    device, epochs: int, batch_size: int = 64, lr: float = 1e-3,
+                    groups_train=None, val_fraction: float = 0.15):
+    if groups_train is None:
+        raise ValueError(
+            "train_one_fold now requires groups_train (subject IDs for X_train) "
+            "so it can carve out an inner validation split by subject instead of "
+            "reusing X_test for checkpoint selection. Pass groups_train=... ."
+        )
+    inner_train_idx, inner_val_idx = split_train_val_by_subject(
+        X_train, y_train, groups_train, val_fraction=val_fraction
+    )
+    X_tr, y_tr = X_train[inner_train_idx], y_train[inner_train_idx]
+    X_val, y_val = X_train[inner_val_idx], y_train[inner_val_idx]
+    return train_and_evaluate(
+        model_name, X_tr, y_tr, X_val, y_val, X_test, y_test,
+        device=device, epochs=epochs, batch_size=batch_size, lr=lr,
+    )
 
 
 def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size: int = 64):
@@ -129,17 +182,19 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
         fold_metrics = []
         t0 = time.time()
 
-        for fold_i, (train_idx, val_idx) in enumerate(folds):
+        for fold_i, (train_idx, test_idx) in enumerate(folds):
             X_train, y_train = X[train_idx], y[train_idx]
-            X_val, y_val = X[val_idx], y[val_idx]
-            val_subjects = sorted(set(groups[val_idx].tolist()))
+            X_test, y_test = X[test_idx], y[test_idx]
+            groups_train = groups[train_idx]
+            test_subjects = sorted(set(groups[test_idx].tolist()))
 
-            print(f"  Fold {fold_i+1}/{n_folds} (held-out subjects: {val_subjects}) "
-                  f"train={len(train_idx)} val={len(val_idx)}...")
+            print(f"  Fold {fold_i+1}/{n_folds} (held-out TEST subjects: {test_subjects}) "
+                  f"train_pool={len(train_idx)} test={len(test_idx)}...")
 
             metrics, _ = train_one_fold(
-                model_name, X_train, y_train, X_val, y_val,
+                model_name, X_train, y_train, X_test, y_test,
                 device=device, epochs=epochs, batch_size=batch_size,
+                groups_train=groups_train,
             )
             print(f"    acc={metrics['accuracy']:.3f} f1_macro={metrics['f1_macro']:.3f}")
             fold_metrics.append(metrics)
@@ -223,3 +278,4 @@ if __name__ == "__main__":
     with open(results_path, "r") as f:
         all_results_so_far = json.load(f)
     print_summary_table(all_results_so_far)
+    

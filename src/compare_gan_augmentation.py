@@ -28,7 +28,7 @@ from . import config
 from .gan import LATENT_DIM
 from .labeling import build_dataset
 from .preprocessing import load_processed
-from .train_baseline import train_one_fold, set_seed
+from .train_baseline import train_and_evaluate, split_train_val_by_subject, set_seed
 from .train_gan import train_gan, generate_synthetic
 
 
@@ -53,28 +53,39 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
 
     results = {"without_gan": [], "with_gan": []}
 
-    for fold_i, (train_idx, val_idx) in enumerate(folds):
-        X_train, y_train = X[train_idx], y[train_idx]
-        X_val, y_val = X[val_idx], y[val_idx]
-        val_subjects = sorted(set(groups[val_idx].tolist()))
-        print(f"\n{'='*60}\nFold {fold_i+1}/{n_folds} (held-out subjects: {val_subjects})\n{'='*60}")
+    for fold_i, (train_idx, test_idx) in enumerate(folds):
+        X_train_pool, y_train_pool = X[train_idx], y[train_idx]
+        X_test, y_test = X[test_idx], y[test_idx]
+        groups_train_pool = groups[train_idx]
+        test_subjects = sorted(set(groups[test_idx].tolist()))
+        print(f"\n{'='*60}\nFold {fold_i+1}/{n_folds} (held-out TEST subjects: {test_subjects})\n{'='*60}")
+
+        # Carve an inner train/val split (by subject) out of this fold's
+        # training pool. The val split is used ONLY for checkpoint selection
+        # and is never touched by the GAN or by synthetic data.
+        inner_train_idx, inner_val_idx = split_train_val_by_subject(
+            X_train_pool, y_train_pool, groups_train_pool
+        )
+        X_tr, y_tr = X_train_pool[inner_train_idx], y_train_pool[inner_train_idx]
+        X_val, y_val = X_train_pool[inner_val_idx], y_train_pool[inner_val_idx]
 
         # --- WITHOUT GAN: baseline on real training data only ---
         print("  [without GAN] training...")
-        metrics_no_gan, _ = train_one_fold(
-            model_name, X_train, y_train, X_val, y_val,
+        metrics_no_gan, _ = train_and_evaluate(
+            model_name, X_tr, y_tr, X_val, y_val, X_test, y_test,
             device=device, epochs=clf_epochs, batch_size=batch_size,
         )
         print(f"    acc={metrics_no_gan['accuracy']:.3f} f1_macro={metrics_no_gan['f1_macro']:.3f}")
         results["without_gan"].append(metrics_no_gan)
 
-        # --- WITH GAN: train CWGAN-GP on this fold's training data only ---
-        print("  [with GAN] training CWGAN-GP on this fold's training subjects...")
-        gen, crit, history = train_gan(X_train, y_train, device=device,
+        # --- WITH GAN: train CWGAN-GP on this fold's INNER TRAINING data only
+        # (never the inner-val subjects, and never the outer test subjects) ---
+        print("  [with GAN] training CWGAN-GP on this fold's inner-train subjects...")
+        gen, crit, history = train_gan(X_tr, y_tr, device=device,
                                          epochs=gan_epochs, batch_size=batch_size)
 
-        n_class0 = int((y_train == 0).sum())
-        n_class1 = int((y_train == 1).sum())
+        n_class0 = int((y_tr == 0).sum())
+        n_class1 = int((y_tr == 1).sum())
         n_minority = min(n_class0, n_class1)
         n_majority = max(n_class0, n_class1)
         n_to_generate_per_class = int((n_majority - n_minority) * synth_fraction)
@@ -84,17 +95,19 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
               f"(real class balance: {n_class0} vs {n_class1})...")
         X_synth, y_synth = generate_synthetic(
             gen, {0: n_to_generate_per_class, 1: n_to_generate_per_class}, device,
-            n_timepoints=X_train.shape[1], n_channels=X_train.shape[2],
+            n_timepoints=X_tr.shape[1], n_channels=X_tr.shape[2],
         )
 
-        X_train_aug = np.concatenate([X_train, X_synth], axis=0)
-        y_train_aug = np.concatenate([y_train, y_synth], axis=0)
-        print(f"  Augmented training set: {X_train.shape[0]} real + {X_synth.shape[0]} synthetic "
-              f"= {X_train_aug.shape[0]} total")
+        # Synthetic data augments ONLY the inner-train set -- X_val (checkpoint
+        # selection) and X_test (final report) stay 100% real.
+        X_tr_aug = np.concatenate([X_tr, X_synth], axis=0)
+        y_tr_aug = np.concatenate([y_tr, y_synth], axis=0)
+        print(f"  Augmented inner-train set: {X_tr.shape[0]} real + {X_synth.shape[0]} synthetic "
+              f"= {X_tr_aug.shape[0]} total")
 
         print("  [with GAN] training classifier on real+synthetic...")
-        metrics_gan, _ = train_one_fold(
-            model_name, X_train_aug, y_train_aug, X_val, y_val,
+        metrics_gan, _ = train_and_evaluate(
+            model_name, X_tr_aug, y_tr_aug, X_val, y_val, X_test, y_test,
             device=device, epochs=clf_epochs, batch_size=batch_size,
         )
         print(f"    acc={metrics_gan['accuracy']:.3f} f1_macro={metrics_gan['f1_macro']:.3f}")

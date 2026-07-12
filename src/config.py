@@ -35,6 +35,13 @@ N_CHANNELS = len(EEG_CHANNELS)  # 14
 BANDPASS_LOW_HZ = 0.5
 BANDPASS_HIGH_HZ = 45.0
 NOTCH_FREQ_HZ = 50.0  # DREAMER collected in UK (UWS) -> mains is 50Hz, not 60Hz
+# NOTE: NOTCH_FREQ_HZ (50) sits OUTSIDE (BANDPASS_LOW_HZ, BANDPASS_HIGH_HZ) = (0.5, 45).
+# The bandpass filter already removes everything at/above 45Hz, so mains noise
+# at 50Hz is gone before the notch filter would even run -- see filter_signal()
+# in preprocessing.py, which now skips the notch filter in this case instead
+# of silently doing nothing. If you raise BANDPASS_HIGH_HZ above 50Hz for a
+# future experiment (e.g. to keep more gamma-band content), the notch filter
+# will automatically switch back on.
 FILTER_ORDER = 4
 
 # Epoching
