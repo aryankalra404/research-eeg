@@ -50,8 +50,15 @@ APPLY_BASELINE_CORRECTION = True
 # fixed microvolt cutoff, since DREAMER's raw units/scale aren't documented
 # in the readme -- median + k*MAD is robust to that ambiguity.
 APPLY_ARTIFACT_REJECTION = True
-ARTIFACT_REJECTION_MAD_MULTIPLIER = 5.0  # windows with any channel's peak-to-peak
-                                          # amplitude beyond median + k*MAD are dropped
+ARTIFACT_REJECTION_MAD_MULTIPLIER = 30.0  # Chosen via src/diagnose_artifacts.py on real
+                                          # DREAMER data: 3.0->50.0%, 5.0->41.7%, 8.0->31.1%,
+                                          # 10.0->27.1%, 15.0->18.4%, 20.0->12.4%, 30.0->4.1%
+                                          # rejected. 30.0 lands in the typical 2-10% range
+                                          # for amplitude-based EEG artifact rejection.
+                                          # The steep curve reflects checking 14 channels
+                                          # independently (any-channel-fails = reject),
+                                          # which compounds false positives fast at
+                                          # aggressive thresholds.
 ARTIFACT_REJECTION_MIN_WINDOWS_WARN = 20  # warn if a subject drops below this many
                                            # windows after rejection (too aggressive / bad data)
 

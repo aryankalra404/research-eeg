@@ -101,6 +101,19 @@ def reject_artifact_windows(
     return keep_mask
 
 
+def diagnose_rejection_thresholds(windows: np.ndarray, multipliers=(3, 5, 8, 10, 15, 20, 30)) -> None:
+    """
+    Prints the rejection rate at several MAD multiplier values, so you can
+    pick a threshold based on evidence rather than guessing. Run this once
+    on a subject or two before committing to a value in config.py.
+    """
+    print(f"  Rejection rate by MAD multiplier (n_windows={windows.shape[0]}):")
+    for m in multipliers:
+        mask = reject_artifact_windows(windows, mad_multiplier=m)
+        rejected_pct = 100 * (~mask).sum() / len(mask)
+        print(f"    multiplier={m:5.1f}  ->  {rejected_pct:5.1f}% rejected")
+
+
 # ---------------------------------------------------------------------------
 # Epoching (sliding window)
 # ---------------------------------------------------------------------------
