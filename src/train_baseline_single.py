@@ -23,8 +23,8 @@ import numpy as np
 from . import config
 from .labeling import build_dataset
 from .preprocessing import load_processed
-from .split import load_split, apply_split
-from .train_baseline import train_one_fold, set_seed
+from .split import load_split, apply_split_with_groups
+from .train_baseline import train_one_fold, set_seed, split_inner_validation
 
 
 def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64):
@@ -36,11 +36,16 @@ def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64
     X, y, groups = build_dataset(processed)
 
     split_info = load_split()
-    X_train, y_train, X_test, y_test = apply_split(X, y, groups, split_info)
+    X_train, y_train, groups_train, X_test, y_test = apply_split_with_groups(X, y, groups, split_info)
     print(f"Train: {X_train.shape[0]} windows ({len(split_info['train_subjects'])} subjects)")
     print(f"Test:  {X_test.shape[0]} windows ({len(split_info['test_subjects'])} subjects)")
     print(f"Train class balance before augmentation: "
           f"non-stress={int((y_train==0).sum())}, stress={int((y_train==1).sum())}")
+
+    # Carve inner validation from TRAINING subjects only, BEFORE any synthetic
+    # augmentation. X_test is never touched here -- it's used exactly once,
+    # at the end, for the reported metric.
+    X_it, y_it, X_iv, y_iv = split_inner_validation(X_train, y_train, groups_train)
 
     condition = "WITHOUT GAN"
     if use_gan:
@@ -55,15 +60,18 @@ def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64
         print(f"Loaded {len(y_synth)} synthetic windows from {synth_path} "
               f"(non-stress={int((y_synth==0).sum())}, stress={int((y_synth==1).sum())})")
 
-        X_train = np.concatenate([X_train, X_synth], axis=0)
-        y_train = np.concatenate([y_train, y_synth], axis=0)
+        # IMPORTANT: synthetic data is added ONLY to the inner-training
+        # partition, never to inner-val or the real test set. Checkpoint
+        # selection must be judged on real data only.
+        X_it = np.concatenate([X_it, X_synth], axis=0)
+        y_it = np.concatenate([y_it, y_synth], axis=0)
         condition = "WITH GAN"
-        print(f"Augmented train set: {X_train.shape[0]} windows "
-              f"(non-stress={int((y_train==0).sum())}, stress={int((y_train==1).sum())})")
+        print(f"Augmented inner-train set: {X_it.shape[0]} windows "
+              f"(non-stress={int((y_it==0).sum())}, stress={int((y_it==1).sum())})")
 
     print(f"\n{'='*60}\n{condition} -- training {model_name}\n{'='*60}")
     metrics, model = train_one_fold(
-        model_name, X_train, y_train, X_test, y_test,
+        model_name, X_it, y_it, X_iv, y_iv, X_test, y_test,
         device=device, epochs=epochs, batch_size=batch_size,
     )
 

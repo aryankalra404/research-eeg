@@ -41,9 +41,14 @@ def _notch_filter(signal: np.ndarray, fs: float) -> np.ndarray:
 
 
 def filter_signal(signal: np.ndarray, fs: float = config.EEG_SAMPLING_RATE) -> np.ndarray:
-    """Apply bandpass then notch filter. signal shape: (M, C)."""
+    """Apply bandpass then notch filter. signal shape: (M, C).
+    The notch filter only runs if NOTCH_FREQ_HZ actually falls within the
+    bandpass passband -- otherwise the bandpass has already removed that
+    frequency content and the notch would be a silent no-op (e.g. bandpass
+    0.5-45Hz followed by a 50Hz notch does nothing useful)."""
     filtered = _bandpass_filter(signal, fs)
-    filtered = _notch_filter(filtered, fs)
+    if config.BANDPASS_LOW_HZ < config.NOTCH_FREQ_HZ < config.BANDPASS_HIGH_HZ:
+        filtered = _notch_filter(filtered, fs)
     return filtered.astype(np.float32)
 
 

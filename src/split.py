@@ -66,5 +66,20 @@ def apply_split(X, y, groups, split_info):
     return X[train_mask], y[train_mask], X[test_mask], y[test_mask]
 
 
+def apply_split_with_groups(X, y, groups, split_info):
+    """
+    Same as apply_split, but also returns groups_train -- needed for carving
+    an inner validation split (see train_baseline.split_inner_validation)
+    without leaking the real test set into checkpoint selection.
+    """
+    train_subjects = set(split_info["train_subjects"])
+    test_subjects = set(split_info["test_subjects"])
+
+    train_mask = np.isin(groups, list(train_subjects))
+    test_mask = np.isin(groups, list(test_subjects))
+
+    return X[train_mask], y[train_mask], groups[train_mask], X[test_mask], y[test_mask]
+
+
 if __name__ == "__main__":
     create_split()

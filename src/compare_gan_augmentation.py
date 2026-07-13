@@ -1,17 +1,19 @@
 """
-The actual with-GAN vs without-GAN comparison your teacher asked for.
+The research-grade with-GAN vs without-GAN comparison, for the paper.
 
-For fairness, this trains a SEPARATE CWGAN-GP inside EACH fold's training
-split only (never sees that fold's held-out validation subjects -- avoids
-any leakage), generates synthetic data to augment that fold's training set,
-then trains 1D-CNN on real-only vs real+synthetic, using the IDENTICAL folds
-as your original Phase 2 baseline run (same GroupKFold call, same seed) so
-the comparison is apples-to-apples.
+Trains a SEPARATE CWGAN-GP inside EACH fold's training split only (never
+sees that fold's held-out validation subjects -- avoids leakage), generates
+synthetic data to augment that fold's training set, then trains the given
+classifier on real-only vs real+synthetic. Uses the IDENTICAL GroupKFold
+folds as train_baseline.py (same seed/order) so results are directly
+comparable to your Phase 2 baseline numbers.
 
-This is slower than training one GAN on everything (a GAN gets trained per
-fold), but it's the methodologically correct way to avoid the augmented
-run having an unfair advantage from synthetic data derived from subjects
-the model will later be tested against indirectly.
+Within each fold, an inner validation split (carved from that fold's
+training subjects only) is used for checkpoint selection -- the fold's real
+held-out subjects are touched exactly once, for the final reported metric,
+never during training or checkpoint selection. Synthetic data is added only
+to the inner-training partition, never to inner-validation or the held-out
+fold.
 
 Usage:
     python -m src.compare_gan_augmentation --model 1dcnn --gan_epochs 200 --clf_epochs 30
@@ -28,7 +30,7 @@ from . import config
 from .gan import LATENT_DIM
 from .labeling import build_dataset
 from .preprocessing import load_processed
-from .train_baseline import train_one_fold, set_seed
+from .train_baseline import train_one_fold, set_seed, split_inner_validation
 from .train_gan import train_gan, generate_synthetic
 
 
@@ -56,19 +58,29 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
     for fold_i, (train_idx, val_idx) in enumerate(folds):
         X_train, y_train = X[train_idx], y[train_idx]
         X_val, y_val = X[val_idx], y[val_idx]
+        groups_train = groups[train_idx]
         val_subjects = sorted(set(groups[val_idx].tolist()))
         print(f"\n{'='*60}\nFold {fold_i+1}/{n_folds} (held-out subjects: {val_subjects})\n{'='*60}")
 
-        # --- WITHOUT GAN: baseline on real training data only ---
+        # Carve inner validation from this fold's TRAINING subjects only.
+        # X_val/y_val (this fold's real held-out subjects) is never used for
+        # checkpoint selection -- only for the final reported metric, once,
+        # for both conditions below.
+        X_it, y_it, X_iv, y_iv = split_inner_validation(X_train, y_train, groups_train)
+
+        # --- WITHOUT GAN: baseline on real inner-training data only ---
         print("  [without GAN] training...")
         metrics_no_gan, _ = train_one_fold(
-            model_name, X_train, y_train, X_val, y_val,
+            model_name, X_it, y_it, X_iv, y_iv, X_val, y_val,
             device=device, epochs=clf_epochs, batch_size=batch_size,
         )
         print(f"    acc={metrics_no_gan['accuracy']:.3f} f1_macro={metrics_no_gan['f1_macro']:.3f}")
         results["without_gan"].append(metrics_no_gan)
 
-        # --- WITH GAN: train CWGAN-GP on this fold's training data only ---
+        # --- WITH GAN: train CWGAN-GP on this fold's FULL training data
+        # (X_train, not just X_it) -- more real data for the GAN to learn
+        # from is preferable, and the GAN itself has no checkpoint-selection
+        # step that could leak from X_val. ---
         print("  [with GAN] training CWGAN-GP on this fold's training subjects...")
         gen, crit, history = train_gan(X_train, y_train, device=device,
                                          epochs=gan_epochs, batch_size=batch_size)
@@ -77,24 +89,29 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
         n_class1 = int((y_train == 1).sum())
         n_minority = min(n_class0, n_class1)
         n_majority = max(n_class0, n_class1)
-        n_to_generate_per_class = int((n_majority - n_minority) * synth_fraction)
-        n_to_generate_per_class = max(n_to_generate_per_class, 100)  # always generate at least something
+        n_to_generate = int((n_majority - n_minority) * synth_fraction)
+        n_to_generate = max(n_to_generate, 100)  # always generate at least something
+        minority_class = 0 if n_class0 < n_class1 else 1
 
-        print(f"  Generating {n_to_generate_per_class} synthetic samples per class "
+        print(f"  Generating {n_to_generate} synthetic samples for minority class={minority_class} "
               f"(real class balance: {n_class0} vs {n_class1})...")
         X_synth, y_synth = generate_synthetic(
-            gen, {0: n_to_generate_per_class, 1: n_to_generate_per_class}, device,
+            gen, {minority_class: n_to_generate}, device,
             n_timepoints=X_train.shape[1], n_channels=X_train.shape[2],
         )
 
-        X_train_aug = np.concatenate([X_train, X_synth], axis=0)
-        y_train_aug = np.concatenate([y_train, y_synth], axis=0)
-        print(f"  Augmented training set: {X_train.shape[0]} real + {X_synth.shape[0]} synthetic "
-              f"= {X_train_aug.shape[0]} total")
+        # IMPORTANT: synthetic data augments ONLY the inner-training
+        # partition (X_it/y_it), never inner-val (X_iv/y_iv) and never the
+        # real held-out fold (X_val/y_val). Checkpoint selection must be
+        # judged on real data only.
+        X_it_aug = np.concatenate([X_it, X_synth], axis=0)
+        y_it_aug = np.concatenate([y_it, y_synth], axis=0)
+        print(f"  Augmented inner-train set: {X_it.shape[0]} real + {X_synth.shape[0]} synthetic "
+              f"= {X_it_aug.shape[0]} total")
 
         print("  [with GAN] training classifier on real+synthetic...")
         metrics_gan, _ = train_one_fold(
-            model_name, X_train_aug, y_train_aug, X_val, y_val,
+            model_name, X_it_aug, y_it_aug, X_iv, y_iv, X_val, y_val,
             device=device, epochs=clf_epochs, batch_size=batch_size,
         )
         print(f"    acc={metrics_gan['accuracy']:.3f} f1_macro={metrics_gan['f1_macro']:.3f}")

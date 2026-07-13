@@ -20,7 +20,7 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 from torch.utils.data import DataLoader
 
@@ -38,21 +38,61 @@ def set_seed(seed: int = config.RANDOM_SEED):
         torch.cuda.manual_seed_all(seed)
 
 
-def train_one_fold(model_name: str, X_train, y_train, X_val, y_val,
-                    device, epochs: int, batch_size: int = 64, lr: float = 1e-3):
-    n_timepoints = X_train.shape[1]
-    n_channels = X_train.shape[2]
+def split_inner_validation(X, y, groups, inner_val_fraction: float = 0.15,
+                            seed: int = config.RANDOM_SEED):
+    """
+    Carves an inner validation set out of TRAINING data only, grouped by
+    subject so no subject straddles inner-train/inner-val. This inner-val
+    set is used ONLY for checkpoint selection (picking the best epoch) --
+    it must never be the same set used for final reported metrics, or you
+    get optimistic bias from implicitly tuning on your test/held-out data.
+
+    Returns: X_inner_train, y_inner_train, X_inner_val, y_inner_val
+    """
+    n_unique_groups = len(set(groups.tolist()))
+    if n_unique_groups < 3:
+        print(f"  [warn] only {n_unique_groups} training subjects available -- "
+              f"cannot carve a proper inner validation split. Using last-epoch "
+              f"checkpoint instead of best-epoch selection for this run.")
+        return X, y, None, None
+
+    gss = GroupShuffleSplit(n_splits=1, test_size=inner_val_fraction, random_state=seed)
+    it_idx, iv_idx = next(gss.split(X, y, groups))
+    return X[it_idx], y[it_idx], X[iv_idx], y[iv_idx]
+
+
+def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y_inner_val,
+                    X_holdout, y_holdout, device, epochs: int, batch_size: int = 64, lr: float = 1e-3):
+    """
+    X_inner_train/y_inner_train: used for gradient updates.
+    X_inner_val/y_inner_val: used ONLY to pick the best-epoch checkpoint
+        (can be None if too few subjects to split -- falls back to last epoch).
+    X_holdout/y_holdout: the real fold-validation or test set. Touched exactly
+        ONCE, after checkpoint selection is already decided, to compute the
+        final reported metrics. This is what prevents checkpoint-selection
+        leakage into the reported numbers.
+    """
+    n_timepoints = X_inner_train.shape[1]
+    n_channels = X_inner_train.shape[2]
 
     model = get_model(model_name, n_channels=n_channels, n_timepoints=n_timepoints, n_classes=2)
     model.to(device)
 
-    train_loader = DataLoader(EEGWindowDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(EEGWindowDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(EEGWindowDataset(X_inner_train, y_inner_train),
+                                batch_size=batch_size, shuffle=True)
+    has_inner_val = X_inner_val is not None
+    if has_inner_val:
+        inner_val_loader = DataLoader(EEGWindowDataset(X_inner_val, y_inner_val),
+                                        batch_size=batch_size, shuffle=False)
+    holdout_loader = DataLoader(EEGWindowDataset(X_holdout, y_holdout),
+                                  batch_size=batch_size, shuffle=False)
 
-    # Class-weighted loss to counter the ~38.5/61.5 imbalance we measured in Phase 1
-    class_counts = np.bincount(y_train, minlength=2)
+    # Class-weighted loss, computed from inner-train only (never from
+    # inner-val or holdout -- those must stay untouched by anything that
+    # influences training).
+    class_counts = np.bincount(y_inner_train, minlength=2)
     class_weights = torch.tensor(
-        [len(y_train) / (2 * c) if c > 0 else 0.0 for c in class_counts], dtype=torch.float32
+        [len(y_inner_train) / (2 * c) if c > 0 else 0.0 for c in class_counts], dtype=torch.float32
     ).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -70,40 +110,44 @@ def train_one_fold(model_name: str, X_train, y_train, X_val, y_val,
             loss.backward()
             optimizer.step()
 
-        # Quick validation each epoch to track best checkpoint
-        model.eval()
-        val_preds, val_true = [], []
-        with torch.no_grad():
-            for xb, yb in val_loader:
-                xb = xb.to(device)
-                logits = model(xb)
-                preds = logits.argmax(dim=1).cpu().numpy()
-                val_preds.extend(preds)
-                val_true.extend(yb.numpy())
-        val_f1 = f1_score(val_true, val_preds, average="macro", zero_division=0)
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
+        if has_inner_val:
+            model.eval()
+            val_preds, val_true = [], []
+            with torch.no_grad():
+                for xb, yb in inner_val_loader:
+                    xb = xb.to(device)
+                    logits = model(xb)
+                    preds = logits.argmax(dim=1).cpu().numpy()
+                    val_preds.extend(preds)
+                    val_true.extend(yb.numpy())
+            val_f1 = f1_score(val_true, val_preds, average="macro", zero_division=0)
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+        else:
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
 
-    # Reload best checkpoint for final metrics
     if best_state is not None:
         model.load_state_dict(best_state)
+
+    # Final metrics computed on the holdout set EXACTLY ONCE, after checkpoint
+    # selection is already locked in.
     model.eval()
-    val_preds, val_true = [], []
+    holdout_preds, holdout_true = [], []
     with torch.no_grad():
-        for xb, yb in val_loader:
+        for xb, yb in holdout_loader:
             xb = xb.to(device)
             logits = model(xb)
             preds = logits.argmax(dim=1).cpu().numpy()
-            val_preds.extend(preds)
-            val_true.extend(yb.numpy())
+            holdout_preds.extend(preds)
+            holdout_true.extend(yb.numpy())
 
     metrics = {
-        "accuracy": accuracy_score(val_true, val_preds),
-        "f1_macro": f1_score(val_true, val_preds, average="macro", zero_division=0),
-        "precision_macro": precision_score(val_true, val_preds, average="macro", zero_division=0),
-        "recall_macro": recall_score(val_true, val_preds, average="macro", zero_division=0),
-        "confusion_matrix": confusion_matrix(val_true, val_preds).tolist(),
+        "accuracy": accuracy_score(holdout_true, holdout_preds),
+        "f1_macro": f1_score(holdout_true, holdout_preds, average="macro", zero_division=0),
+        "precision_macro": precision_score(holdout_true, holdout_preds, average="macro", zero_division=0),
+        "recall_macro": recall_score(holdout_true, holdout_preds, average="macro", zero_division=0),
+        "confusion_matrix": confusion_matrix(holdout_true, holdout_preds).tolist(),
     }
     return metrics, model
 
@@ -132,13 +176,16 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
         for fold_i, (train_idx, val_idx) in enumerate(folds):
             X_train, y_train = X[train_idx], y[train_idx]
             X_val, y_val = X[val_idx], y[val_idx]
+            groups_train = groups[train_idx]
             val_subjects = sorted(set(groups[val_idx].tolist()))
 
             print(f"  Fold {fold_i+1}/{n_folds} (held-out subjects: {val_subjects}) "
                   f"train={len(train_idx)} val={len(val_idx)}...")
 
+            X_it, y_it, X_iv, y_iv = split_inner_validation(X_train, y_train, groups_train)
+
             metrics, _ = train_one_fold(
-                model_name, X_train, y_train, X_val, y_val,
+                model_name, X_it, y_it, X_iv, y_iv, X_val, y_val,
                 device=device, epochs=epochs, batch_size=batch_size,
             )
             print(f"    acc={metrics['accuracy']:.3f} f1_macro={metrics['f1_macro']:.3f}")
