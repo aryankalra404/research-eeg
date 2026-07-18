@@ -403,7 +403,13 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
         output_dir / "gan_tsne_check.png", class_names=class_names, seed=seed,
     )
 
-    quality = evaluate_synthetic_quality(X_gan, y_gan, X_quality, y_quality)
+    quality = evaluate_synthetic_quality(
+        X_gan,
+        y_gan,
+        X_quality,
+        y_quality,
+        fs=config.sampling_rate_hz(dataset),
+    )
     quality_path = output_dir / "synthetic_quality.json"
     with open(quality_path, "w") as f:
         json.dump(quality, f, indent=2)

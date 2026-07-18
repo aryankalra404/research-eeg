@@ -73,6 +73,13 @@ def dataset_spec_dict(dataset: str | None = None) -> dict:
     return asdict(dataset_spec(dataset))
 
 
+def sampling_rate_hz(dataset: str | None = None) -> int:
+    sampling_rate = dataset_spec(dataset).sampling_rate_hz
+    if sampling_rate is None:
+        raise ValueError(f"Sampling rate is not configured for dataset '{dataset}'.")
+    return int(sampling_rate)
+
+
 def raw_dir(dataset: str | None = None) -> Path:
     return DATA_RAW / normalize_dataset_name(dataset)
 
@@ -102,7 +109,7 @@ STEW_RAW_DIR = raw_dir("stew") / "stew_dataset"
 # ---------------------------------------------------------------------------
 # Dataset constants
 # ---------------------------------------------------------------------------
-EEG_SAMPLING_RATE = dataset_spec(DEFAULT_DATASET).sampling_rate_hz  # legacy shared alias
+EEG_SAMPLING_RATE = sampling_rate_hz(DEFAULT_DATASET)  # legacy shared alias
 ECG_SAMPLING_RATE = 256  # Hz
 N_SUBJECTS = DATASET_SPECS["dreamer"].n_subjects
 N_VIDEOS = 18
@@ -124,7 +131,13 @@ FILTER_ORDER = 4
 # Epoching
 WINDOW_SECONDS = 4.0  # fixed window length fed to all models + the GAN
 WINDOW_OVERLAP = 0.5  # 50% overlap between consecutive windows (0.0 = no overlap)
-WINDOW_SAMPLES = int(WINDOW_SECONDS * EEG_SAMPLING_RATE)  # 512 samples per window
+
+
+def window_samples(dataset: str | None = None) -> int:
+    return int(WINDOW_SECONDS * sampling_rate_hz(dataset))
+
+
+WINDOW_SAMPLES = window_samples(DEFAULT_DATASET)  # legacy shared alias
 
 # Baseline correction: subtract mean baseline signal (per-channel) from stimuli
 APPLY_BASELINE_CORRECTION = True

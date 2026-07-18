@@ -16,15 +16,17 @@ from .preprocessing import (
 
 def dreamer_windows(max_subjects: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     subjects = load_dreamer_mat()
+    sampling_rate = config.sampling_rate_hz("dreamer")
+    window_samples = config.window_samples("dreamer")
     if max_subjects:
         subjects = subjects[:max_subjects]
     windows, subject_ids = [], []
     for subject in subjects:
         for trial_i in range(config.N_VIDEOS):
-            baseline = filter_signal(subject.eeg_baseline[trial_i])
-            stimuli = filter_signal(subject.eeg_stimuli[trial_i])
+            baseline = filter_signal(subject.eeg_baseline[trial_i], fs=sampling_rate)
+            stimuli = filter_signal(subject.eeg_stimuli[trial_i], fs=sampling_rate)
             signal = baseline_correct(stimuli, baseline) if config.APPLY_BASELINE_CORRECTION else stimuli
-            trial_windows = sliding_window_epochs(signal)
+            trial_windows = sliding_window_epochs(signal, window_samples=window_samples)
             windows.append(trial_windows)
             subject_ids.append(np.full(len(trial_windows), subject.subject_id, dtype=np.int64))
     combined = np.concatenate(windows)
@@ -33,12 +35,17 @@ def dreamer_windows(max_subjects: int | None) -> tuple[np.ndarray, np.ndarray, n
 
 def stew_windows(max_subjects: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     subjects = load_stew()
+    sampling_rate = config.sampling_rate_hz("stew")
+    window_samples = config.window_samples("stew")
     if max_subjects:
         subjects = subjects[:max_subjects]
     windows, labels, subject_ids = [], [], []
     for subject in subjects:
         for raw, label in ((subject.eeg_lo, 0), (subject.eeg_hi, 1)):
-            condition_windows = sliding_window_epochs(filter_signal(raw))
+            filtered = filter_signal(raw, fs=sampling_rate)
+            condition_windows = sliding_window_epochs(
+                filtered, window_samples=window_samples
+            )
             windows.append(condition_windows)
             labels.append(np.full(len(condition_windows), label, dtype=np.int64))
             subject_ids.append(

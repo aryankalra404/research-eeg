@@ -19,9 +19,27 @@ Usage:
     model = get_model("eegnet_adapted", n_channels=14, n_timepoints=512, n_classes=2)
 """
 
+from collections.abc import Callable
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _infer_flattened_size(
+    module: nn.Module,
+    feature_fn: Callable[[torch.Tensor], torch.Tensor],
+    input_shape: tuple[int, ...],
+) -> int:
+    """Infer a feature size without mutating BatchNorm or dropout state."""
+    was_training = module.training
+    module.eval()
+    try:
+        with torch.no_grad():
+            output = feature_fn(torch.zeros(input_shape))
+    finally:
+        module.train(was_training)
+    return int(output.flatten(start_dim=1).shape[1])
 
 
 # ---------------------------------------------------------------------------
@@ -110,11 +128,9 @@ class EEGNetAdapted(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # Infer flattened size with a dummy forward pass
-        with torch.no_grad():
-            dummy = torch.zeros(1, 1, n_channels, n_timepoints)
-            out = self._forward_features(dummy)
-            flat_size = out.view(1, -1).shape[1]
+        flat_size = _infer_flattened_size(
+            self, self._forward_features, (1, 1, n_channels, n_timepoints)
+        )
         self.classify = nn.Linear(flat_size, n_classes)
 
     def _forward_features(self, x):
@@ -162,10 +178,9 @@ class DeepConvNetAdapted(nn.Module):
         self.block3 = block(50, 100, 10)
         self.block4 = block(100, 200, 10)
 
-        with torch.no_grad():
-            dummy = torch.zeros(1, 1, n_channels, n_timepoints)
-            out = self._forward_features(dummy)
-            flat_size = out.view(1, -1).shape[1]
+        flat_size = _infer_flattened_size(
+            self, self._forward_features, (1, 1, n_channels, n_timepoints)
+        )
         self.classify = nn.Linear(flat_size, n_classes)
 
     def _forward_features(self, x):
@@ -197,10 +212,9 @@ class ShallowConvNetAdapted(nn.Module):
         self.pool = nn.AvgPool2d((1, 75), stride=(1, 15))
         self.dropout = nn.Dropout(dropout)
 
-        with torch.no_grad():
-            dummy = torch.zeros(1, 1, n_channels, n_timepoints)
-            out = self._forward_features(dummy)
-            flat_size = out.view(1, -1).shape[1]
+        flat_size = _infer_flattened_size(
+            self, self._forward_features, (1, 1, n_channels, n_timepoints)
+        )
         self.classify = nn.Linear(flat_size, n_classes)
 
     def _square(self, x):

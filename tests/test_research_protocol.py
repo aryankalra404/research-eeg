@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 from src import config
 from src.models import MODEL_REGISTRY, get_model
@@ -48,7 +49,8 @@ class ResearchProtocolTests(unittest.TestCase):
         rng = np.random.default_rng(42)
         x = rng.normal(size=(8, 512, 14)).astype(np.float32)
         y = np.repeat([0, 1], 4)
-        report = evaluate_synthetic_quality(x, y, x.copy(), y.copy())
+        report = evaluate_synthetic_quality(x, y, x.copy(), y.copy(), fs=128)
+        self.assertEqual(report["sampling_rate_hz"], 128)
         for metrics in report["classes"].values():
             self.assertEqual(metrics["channel_covariance_relative_error"], 0.0)
             self.assertEqual(metrics["lag1_autocorrelation_relative_error"], 0.0)
@@ -81,6 +83,42 @@ class ResearchProtocolTests(unittest.TestCase):
     def test_legacy_model_alias_resolves_to_adapted_model(self):
         model = get_model("eegnet", n_channels=14, n_timepoints=512)
         self.assertEqual(model.__class__.__name__, "EEGNetAdapted")
+
+    def test_adapted_cnn_shape_inference_does_not_update_batchnorm(self):
+        for name in (
+            "eegnet_adapted",
+            "deepconvnet_adapted",
+            "shallowconvnet_adapted",
+        ):
+            with self.subTest(model=name):
+                model = get_model(name, n_channels=14, n_timepoints=512)
+                self.assertTrue(model.training)
+                batch_norms = [
+                    module
+                    for module in model.modules()
+                    if isinstance(
+                        module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)
+                    )
+                ]
+                self.assertTrue(batch_norms)
+                for batch_norm in batch_norms:
+                    self.assertEqual(int(batch_norm.num_batches_tracked), 0)
+                    self.assertTrue(
+                        torch.equal(
+                            batch_norm.running_mean,
+                            torch.zeros_like(batch_norm.running_mean),
+                        )
+                    )
+                    self.assertTrue(
+                        torch.equal(
+                            batch_norm.running_var,
+                            torch.ones_like(batch_norm.running_var),
+                        )
+                    )
+
+    def test_dataset_specific_sampling_configuration(self):
+        self.assertEqual(config.sampling_rate_hz("stew"), 128)
+        self.assertEqual(config.window_samples("stew"), 512)
 
     def test_planned_datasets_are_not_accepted_by_training_cli_config(self):
         self.assertIn("iub", config.PLANNED_DATASETS)

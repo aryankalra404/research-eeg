@@ -173,7 +173,13 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             n_timepoints=X_it.shape[1],
             n_channels=X_it.shape[2],
         )
-        quality = evaluate_synthetic_quality(X_it, y_it, X_quality, y_quality)
+        quality = evaluate_synthetic_quality(
+            X_it,
+            y_it,
+            X_quality,
+            y_quality,
+            fs=config.sampling_rate_hz(dataset),
+        )
 
         # IMPORTANT: synthetic data augments ONLY the inner-training
         # partition (X_it/y_it), never inner-val (X_iv/y_iv) and never the

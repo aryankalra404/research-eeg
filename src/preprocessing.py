@@ -194,26 +194,28 @@ class ProcessedSubject:
 def process_subject(subject: SubjectData) -> ProcessedSubject:
     all_windows = []
     all_trial_idx = []
+    sampling_rate = config.sampling_rate_hz("dreamer")
+    window_samples = config.window_samples("dreamer")
 
     for trial_i in range(config.N_VIDEOS):
         baseline_raw = subject.eeg_baseline[trial_i]
         stimuli_raw = subject.eeg_stimuli[trial_i]
 
-        baseline_filt = filter_signal(baseline_raw)
-        stimuli_filt = filter_signal(stimuli_raw)
+        baseline_filt = filter_signal(baseline_raw, fs=sampling_rate)
+        stimuli_filt = filter_signal(stimuli_raw, fs=sampling_rate)
 
         if config.APPLY_BASELINE_CORRECTION:
             stimuli_corrected = baseline_correct(stimuli_filt, baseline_filt)
         else:
             stimuli_corrected = stimuli_filt
 
-        windows = sliding_window_epochs(stimuli_corrected)
+        windows = sliding_window_epochs(stimuli_corrected, window_samples=window_samples)
         if windows.shape[0] == 0:
             # Clip too short for even one window at this window size -- flag it.
             print(
                 f"  [warn] subject {subject.subject_id} trial {trial_i}: "
                 f"clip too short ({stimuli_corrected.shape[0]} samples) for "
-                f"window size {config.WINDOW_SAMPLES} -- skipped."
+                f"window size {window_samples} -- skipped."
             )
             continue
 
@@ -255,17 +257,19 @@ def process_stew_subject(subject: STEWSubjectData) -> ProcessedSubject:
     condition_windows = []
     condition_trial_idx = []
     condition_labels = []
+    sampling_rate = config.sampling_rate_hz("stew")
+    window_samples = config.window_samples("stew")
 
     for trial_i, (condition_name, raw, label) in enumerate(
         [("lo", subject.eeg_lo, 0), ("hi", subject.eeg_hi, 1)]
     ):
-        filtered = filter_signal(raw, fs=config.EEG_SAMPLING_RATE)
-        windows = sliding_window_epochs(filtered)
+        filtered = filter_signal(raw, fs=sampling_rate)
+        windows = sliding_window_epochs(filtered, window_samples=window_samples)
         if windows.shape[0] == 0:
             print(
                 f"  [warn] STEW subject {subject.subject_id} {condition_name}: "
                 f"recording too short ({filtered.shape[0]} samples) for "
-                f"window size {config.WINDOW_SAMPLES} -- skipped."
+                f"window size {window_samples} -- skipped."
             )
             continue
 

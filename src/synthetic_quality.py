@@ -43,11 +43,15 @@ def evaluate_synthetic_quality(
     y_real: np.ndarray,
     X_synth: np.ndarray,
     y_synth: np.ndarray,
-    fs: int = config.EEG_SAMPLING_RATE,
+    *,
+    fs: int,
     max_samples_per_class: int = 1000,
 ) -> dict:
     """Return interpretable distribution checks for every generated class."""
+    if fs <= 0:
+        raise ValueError(f"Sampling rate must be positive, got {fs}.")
     report: dict[str, object] = {
+        "sampling_rate_hz": int(fs),
         "note": (
             "These diagnostics detect obvious distribution mismatch; they do not "
             "prove that synthetic EEG is physiologically valid."

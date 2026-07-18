@@ -78,7 +78,7 @@ def preprocessing_snapshot(dataset: str) -> dict:
         "filter_order": config.FILTER_ORDER,
         "window_seconds": config.WINDOW_SECONDS,
         "window_overlap": config.WINDOW_OVERLAP,
-        "window_samples": config.WINDOW_SAMPLES,
+        "window_samples": config.window_samples(dataset),
         "artifact_rejection": config.APPLY_ARTIFACT_REJECTION,
         "artifact_mad_multiplier": config.artifact_rejection_mad_multiplier(dataset),
         "normalization": config.STEW_NORMALIZATION if dataset == "stew" else config.NORMALIZATION,
