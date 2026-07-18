@@ -143,10 +143,30 @@ five critic updates, and gradient-penalty coefficient 10. Augmentation is a
 predeclared percentage of each real class, while quality evaluation always
 generates an independent balanced sample from both classes.
 
-Report both window-level and subject-condition-level metrics. Confidence
-intervals resample whole subjects so overlapping windows are never treated as
-independent bootstrap units. Paired real-only versus augmented comparisons use
-the same folds and classifier seeds and include an exact sign-flip test.
+Report both window-level and subject-condition-level metrics: accuracy,
+balanced accuracy, macro precision/recall/F1, sensitivity, specificity, MCC,
+ROC-AUC, average precision, per-class metrics, confusion matrices, model size,
+training time, and inference time. Confidence intervals resample whole subjects
+so overlapping windows are never treated as independent bootstrap units.
+
+Paired real-only versus augmented comparisons use the same folds and classifier
+seeds. The primary subject-condition analysis pools out-of-fold predictions from
+all 48 held-out subjects and reports a subject-cluster bootstrap interval plus a
+subject-wise randomization p-value. Holm correction is applied across reported
+paired metrics. The fold-level exact sign-flip test is retained as a secondary
+diagnostic; with five folds its smallest possible two-sided p-value is 0.0625.
+
+Use `--include_simple_augmentation` to compare CWGAN-GP with conventional
+Gaussian-noise, time-shift, and channel-dropout augmentation at the same sample
+fraction. Predeclare fractions and seeds; never select either from final
+held-out performance.
+
+Synthetic quality must be reported across fidelity (PSD/band power,
+autocorrelation, covariance, MMD), diversity (density and coverage), utility
+(TRTR/TSTR and real-only versus real+synthetic classifiers), and memorization
+(synthetic-to-training versus synthetic-to-unseen nearest-neighbor distances).
+Nearest-neighbor results are diagnostics and must not be described as formal
+privacy guarantees.
 
 Every baseline and GAN-comparison fold saves checkpoints, selected epoch,
 training history, subject lists, raw/split checksums, Git state, package versions,

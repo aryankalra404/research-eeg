@@ -354,7 +354,7 @@ python3 -m src.train_baseline_single --dataset stew --model eegnet_adapted --use
 Run the stricter per-fold comparison used for research reporting:
 
 ```bash
-python3 -m src.compare_gan_augmentation --dataset stew --model eegnet_adapted --gan_epochs 200 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25
+python3 -m src.compare_gan_augmentation --dataset stew --model eegnet_adapted --gan_epochs 400 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25 --include_simple_augmentation
 ```
 
 Every fixed-split GAN run saves:
@@ -365,20 +365,35 @@ runs/stew/<run>/training_history.json
 outputs/stew/<run>/synthetic_quality.json
 ```
 
-The quality report compares real and synthetic channel covariance, lag-1
-autocorrelation, and theta/alpha/beta/gamma band power. These checks can expose
-obvious mismatch but do not prove physiological validity; downstream held-out
-classification and multiple seeds are still required.
+The quality report covers channel covariance, lag-1 autocorrelation,
+theta/alpha/beta/gamma band power, feature-space MMD, density/coverage,
+nearest-neighbor memorization diagnostics, and lightweight TRTR/TSTR utility.
+GAN runs also save real-vs-synthetic PSD and channel-correlation figures. These
+checks can expose mismatch but do not prove physiological validity; downstream
+held-out classification and multiple seeds are still required.
 
 The per-fold paper comparison saves a GAN, both classifier checkpoints, GAN
 history, balanced two-class quality diagnostics, full fold manifest, window-
-level metrics, subject-condition metrics, subject-clustered bootstrap intervals,
-and exact paired sign-flip tests. Run predeclared augmentation fractions such as
+level metrics, subject-condition metrics, parameter counts, training/inference
+timing, subject-clustered bootstrap intervals, subject-wise randomization tests,
+Holm-adjusted p-values, exact fold sign-flip tests, and publication-ready CSV
+tables. With `--include_simple_augmentation`, it also compares a conventional
+noise/time-shift/channel-dropout control at the same fraction. Run predeclared
+augmentation fractions such as
 `0.10`, `0.25`, `0.50`, and `1.00`; do not choose the best fraction using final
 held-out results.
 
 For multiple-seed reporting, repeat the command with predeclared seeds such as
-`42`, `43`, and `44`, then report all seeds rather than selecting the best run.
+`42`, `43`, `44`, `45`, and `46`, then report all seeds rather than selecting
+the best run.
+
+Baseline outputs include accuracy, balanced accuracy, macro precision/recall/F1,
+class-1 sensitivity, class-0 specificity, MCC, ROC-AUC, average precision,
+per-class precision/recall/F1/support, confusion matrices, 95% intervals,
+parameter count, training time, and inference milliseconds per window. The
+merged paper table is `outputs/stew/baseline_results_table.csv`; ROC,
+precision-recall, and confusion plots are under `outputs/stew/baseline_plots/`.
+Each strict GAN comparison writes `outputs/stew/<run>/comparison_table.csv`.
 
 ## DREAMER Commands
 

@@ -31,6 +31,11 @@ from .labeling import build_dataset
 from .models import MODEL_REGISTRY, get_model
 from .preprocessing import load_processed
 from .provenance import build_provenance, write_json
+from .reporting import (
+    summarize_fold_metrics,
+    write_baseline_diagnostic_plots,
+    write_baseline_tables,
+)
 from .reproducibility import set_seed
 from .split import inner_group_split_indices
 
@@ -57,6 +62,13 @@ def split_inner_validation(X, y, groups, inner_val_fraction: float = 0.15,
               f"checkpoint instead of best-epoch selection for this run.")
         return X, y, None, None
     return X[inner_train_idx], y[inner_train_idx], X[inner_val_idx], y[inner_val_idx]
+
+
+def _synchronize_device(device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps" and hasattr(torch, "mps"):
+        torch.mps.synchronize()
 
 
 def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y_inner_val,
@@ -108,6 +120,7 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
     best_epoch = epochs
     training_history = {"train_loss": [], "inner_val_f1_macro": []}
 
+    training_started = time.perf_counter()
     for epoch in range(epochs):
         model.train()
         epoch_losses = []
@@ -143,11 +156,15 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
 
     if best_state is not None:
         model.load_state_dict(best_state)
+    _synchronize_device(device)
+    training_seconds = time.perf_counter() - training_started
 
     # Final metrics computed on the holdout set EXACTLY ONCE, after checkpoint
     # selection is already locked in.
     model.eval()
     holdout_probabilities, holdout_true = [], []
+    _synchronize_device(device)
+    inference_started = time.perf_counter()
     with torch.no_grad():
         for xb, yb in holdout_loader:
             xb = xb.to(device)
@@ -155,6 +172,8 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
             probabilities = torch.softmax(logits, dim=1).cpu().numpy()
             holdout_probabilities.extend(probabilities)
             holdout_true.extend(yb.numpy())
+    _synchronize_device(device)
+    inference_seconds = time.perf_counter() - inference_started
 
     evaluation = evaluate_predictions(
         np.asarray(holdout_true),
@@ -166,6 +185,16 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
     metrics["subject_condition_level"] = evaluation["subject_condition_level"]
     metrics["selected_epoch"] = int(best_epoch)
     metrics["training_history"] = training_history
+    metrics["parameter_count"] = int(sum(parameter.numel() for parameter in model.parameters()))
+    metrics["trainable_parameter_count"] = int(
+        sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    )
+    metrics["training_seconds"] = float(training_seconds)
+    metrics["inference_seconds_total"] = float(inference_seconds)
+    metrics["inference_ms_per_window"] = float(
+        1000.0 * inference_seconds / max(1, len(holdout_true))
+    )
+    metrics["inference_n_windows"] = int(len(holdout_true))
     return metrics, model
 
 
@@ -273,6 +302,7 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
         print(f"    subject-condition f1 = {subject_f1_mean:.3f} +/- {subject_f1_std:.3f}")
 
         all_results[model_name] = {
+            "model": model_name,
             "fold_metrics": fold_metrics,
             "accuracy_mean": acc_mean,
             "accuracy_std": acc_std,
@@ -287,6 +317,7 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
             "epochs": epochs,
             "n_folds": n_folds,
             "run_name": model_run_name,
+            "research_summary": summarize_fold_metrics(fold_metrics),
         }
         manifest = {
             "run_type": "subject_independent_baseline_cv",
@@ -307,6 +338,9 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
             model_run_dir / "manifest.json",
             manifest,
         )
+        # Persist after every completed model so a later interruption does not
+        # hide already-finished folds and publication metrics.
+        save_results({model_name: all_results[model_name]}, dataset=dataset)
 
     return all_results
 
@@ -342,7 +376,11 @@ def save_results(results: dict, out_path=None, dataset: str = config.DEFAULT_DAT
 
     with open(out_path, "w") as f:
         json.dump(existing, f, indent=2)
+    table_path = out_path.with_name("baseline_results_table.csv")
+    write_baseline_tables(table_path, existing)
+    write_baseline_diagnostic_plots(out_path.parent / "baseline_plots", existing)
     print(f"\nSaved/merged results to {out_path} (now contains: {list(existing.keys())})")
+    print(f"Saved publication table to {table_path}")
 
 
 def print_summary_table(results: dict):

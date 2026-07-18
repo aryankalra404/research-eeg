@@ -5,8 +5,14 @@ import torch
 import torch.nn as nn
 
 from src import config
+from src.augmentation import generate_simple_augmentation
 from src.models import MODEL_REGISTRY, get_model
-from src.evaluation import evaluate_predictions, paired_sign_flip_test
+from src.evaluation import (
+    evaluate_predictions,
+    holm_adjust_p_values,
+    paired_sign_flip_test,
+    paired_subject_cluster_test,
+)
 from src.preprocessing import zscore_normalize_per_window
 from src.split import inner_group_split_indices
 from src.synthetic_quality import evaluate_synthetic_quality
@@ -57,6 +63,7 @@ class ResearchProtocolTests(unittest.TestCase):
             self.assertTrue(
                 all(error == 0.0 for error in metrics["band_power_relative_error"].values())
             )
+            self.assertAlmostEqual(metrics["feature_rbf_mmd"], 0.0, places=7)
 
     def test_subject_condition_metrics_weight_subjects_equally(self):
         y = np.array([0, 0, 1, 1, 0, 1])
@@ -71,11 +78,60 @@ class ResearchProtocolTests(unittest.TestCase):
         self.assertEqual(
             metrics["subject_condition_level"]["n_subject_condition_units"], 4
         )
+        self.assertEqual(metrics["window_level"]["balanced_accuracy"], 1.0)
+        self.assertEqual(metrics["window_level"]["mcc"], 1.0)
+        self.assertEqual(metrics["window_level"]["roc_auc"], 1.0)
+        self.assertEqual(len(metrics["window_level"]["curves"]["grid"]), 101)
 
     def test_paired_sign_flip_test_detects_direction(self):
         result = paired_sign_flip_test([0.5, 0.6, 0.7], [0.6, 0.7, 0.8])
         self.assertAlmostEqual(result["mean_paired_delta"], 0.1)
         self.assertEqual(result["n_pairs"], 3)
+
+    def test_holm_adjustment_is_monotonic_and_bounded(self):
+        adjusted = holm_adjust_p_values({"a": 0.01, "b": 0.03, "c": 0.2})
+        self.assertEqual(adjusted["a"], 0.03)
+        self.assertGreaterEqual(adjusted["b"], adjusted["a"])
+        self.assertLessEqual(adjusted["c"], 1.0)
+
+    def test_subject_cluster_pairing_uses_all_subjects(self):
+        def fold(groups, baseline, augmented):
+            truth = [0, 1] * len(groups)
+            expanded_groups = np.repeat(groups, 2).tolist()
+            base = {
+                "subject_condition_level": {
+                    "units": {"groups": expanded_groups, "y_true": truth, "y_pred": baseline}
+                }
+            }
+            aug = {
+                "subject_condition_level": {
+                    "units": {"groups": expanded_groups, "y_true": truth, "y_pred": augmented}
+                }
+            }
+            return base, aug
+
+        base1, aug1 = fold([1, 2], [0, 0, 0, 0], [0, 1, 0, 1])
+        base2, aug2 = fold([3, 4], [0, 0, 0, 0], [0, 1, 0, 1])
+        result = paired_subject_cluster_test(
+            [base1, base2], [aug1, aug2], metric="accuracy", seed=42, n_resamples=100
+        )
+        self.assertEqual(result["n_subjects"], 4)
+        self.assertGreater(result["paired_delta"], 0)
+
+    def test_simple_augmentation_preserves_shape_labels_and_seed(self):
+        rng = np.random.default_rng(42)
+        x = rng.normal(size=(8, 32, 4)).astype(np.float32)
+        y = np.repeat([0, 1], 4)
+        first_x, first_y = generate_simple_augmentation(
+            x, y, {0: 3, 1: 2}, seed=7
+        )
+        second_x, second_y = generate_simple_augmentation(
+            x, y, {0: 3, 1: 2}, seed=7
+        )
+        self.assertEqual(first_x.shape, (5, 32, 4))
+        np.testing.assert_array_equal(first_y, np.array([0, 0, 0, 1, 1]))
+        np.testing.assert_allclose(first_x, second_x)
+        np.testing.assert_array_equal(first_y, second_y)
 
     def test_reference_wgan_gp_adam_betas(self):
         self.assertEqual(ADAM_BETAS, (0.0, 0.9))

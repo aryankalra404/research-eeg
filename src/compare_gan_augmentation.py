@@ -27,13 +27,19 @@ import torch
 from sklearn.model_selection import GroupKFold
 
 from . import config
-from .evaluation import paired_sign_flip_test
+from .augmentation import generate_simple_augmentation
+from .evaluation import (
+    holm_adjust_p_values,
+    paired_sign_flip_test,
+    paired_subject_cluster_test,
+)
 from .labeling import build_dataset
 from .preprocessing import load_processed
 from .provenance import build_provenance, write_json
+from .reporting import comparison_table_rows, write_comparison_plot, write_csv
 from .reproducibility import set_seed
 from .split import inner_group_split_indices
-from .synthetic_quality import evaluate_synthetic_quality
+from .synthetic_quality import evaluate_synthetic_quality, save_synthetic_quality_plots
 from .train_baseline import train_one_fold
 from .train_gan import (
     ADAM_BETAS,
@@ -51,6 +57,7 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
                     synth_fraction: float = 0.25, dataset: str = config.DEFAULT_DATASET,
                     seed: int = config.RANDOM_SEED, run_name: str | None = None,
                     quality_samples_per_class: int = QUALITY_SAMPLES_PER_CLASS,
+                    include_simple_augmentation: bool = False,
                     overwrite: bool = False):
     """
     synth_fraction: synthetic samples added for each class relative to that
@@ -91,6 +98,7 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
     results = {
         "without_gan": [],
         "with_gan": [],
+        "with_simple_augmentation": [],
         "metadata": {
             "dataset": dataset,
             "random_seed": seed,
@@ -101,6 +109,7 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             "synth_fraction_per_class": synth_fraction,
             "quality_samples_per_class": quality_samples_per_class,
             "run_name": run_name,
+            "include_simple_augmentation": include_simple_augmentation,
         },
     }
 
@@ -179,7 +188,40 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             X_quality,
             y_quality,
             fs=config.sampling_rate_hz(dataset),
+            X_reference=X_iv,
+            y_reference=y_iv,
         )
+        save_synthetic_quality_plots(
+            X_it,
+            y_it,
+            X_quality,
+            y_quality,
+            fs=config.sampling_rate_hz(dataset),
+            output_dir=fold_output_dir,
+            class_names=config.class_names(dataset),
+        )
+
+        if include_simple_augmentation:
+            X_simple, y_simple = generate_simple_augmentation(
+                X_it, y_it, n_by_class, seed=classifier_seed + 20_000
+            )
+            set_seed(classifier_seed)
+            print("  [simple augmentation] training classifier...")
+            metrics_simple, model_simple = train_one_fold(
+                model_name,
+                np.concatenate([X_it, X_simple]),
+                np.concatenate([y_it, y_simple]),
+                X_iv,
+                y_iv,
+                X_val,
+                y_val,
+                groups[val_idx],
+                device=device,
+                epochs=clf_epochs,
+                batch_size=batch_size,
+                seed=classifier_seed,
+            )
+            results["with_simple_augmentation"].append(metrics_simple)
 
         # IMPORTANT: synthetic data augments ONLY the inner-training
         # partition (X_it/y_it), never inner-val (X_iv/y_iv) and never the
@@ -205,6 +247,11 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
         torch.save(crit.state_dict(), fold_model_dir / "cwgan_gp_critic.pt")
         torch.save(model_no_gan.state_dict(), fold_model_dir / f"{model_name}_without_gan.pt")
         torch.save(model_gan.state_dict(), fold_model_dir / f"{model_name}_with_gan.pt")
+        if include_simple_augmentation:
+            torch.save(
+                model_simple.state_dict(),
+                fold_model_dir / f"{model_name}_with_simple_augmentation.pt",
+            )
         write_json(fold_run_dir / "gan_training_history.json", history)
         write_json(fold_output_dir / "synthetic_quality.json", quality)
         write_json(fold_run_dir / "manifest.json", {
@@ -215,6 +262,8 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             "classifier_seed": classifier_seed,
             "gan_seed": gan_seed,
             "gan_epochs": gan_epochs,
+            "gan_training_seconds": history["training_seconds"],
+            "gan_mean_epoch_seconds": history["mean_epoch_seconds"],
             "classifier_epochs": clf_epochs,
             "batch_size": batch_size,
             "synth_fraction_per_class": synth_fraction,
@@ -232,27 +281,66 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             "holdout_subjects": val_subjects,
             "without_gan_metrics": metrics_no_gan,
             "with_gan_metrics": metrics_gan,
+            "with_simple_augmentation_metrics": (
+                metrics_simple if include_simple_augmentation else None
+            ),
             "synthetic_quality": quality,
             "quality_report": str((fold_output_dir / "synthetic_quality.json").relative_to(config.PROJECT_ROOT)),
             "model_directory": str(fold_model_dir.relative_to(config.PROJECT_ROOT)),
             "provenance": provenance,
         })
 
-    results["paired_tests"] = {
-        "window_accuracy": paired_sign_flip_test(
-            [m["accuracy"] for m in results["without_gan"]],
-            [m["accuracy"] for m in results["with_gan"]],
-        ),
-        "window_f1_macro": paired_sign_flip_test(
-            [m["f1_macro"] for m in results["without_gan"]],
-            [m["f1_macro"] for m in results["with_gan"]],
-        ),
-        "subject_condition_accuracy": paired_sign_flip_test(
-            [m["subject_condition_level"]["accuracy"] for m in results["without_gan"]],
-            [m["subject_condition_level"]["accuracy"] for m in results["with_gan"]],
-        ),
-    }
+    results["paired_tests"] = {}
+    results["subject_cluster_tests"] = {}
+    for condition in ("with_gan", "with_simple_augmentation"):
+        if not results[condition]:
+            continue
+        tests = {}
+        for level, metric in (
+            ("window", "accuracy"),
+            ("window", "f1_macro"),
+            ("subject_condition", "accuracy"),
+            ("subject_condition", "f1_macro"),
+        ):
+            def values(source):
+                if level == "window":
+                    return [fold[metric] for fold in source]
+                return [fold["subject_condition_level"][metric] for fold in source]
+
+            tests[f"{level}_{metric}"] = paired_sign_flip_test(
+                values(results["without_gan"]), values(results[condition])
+            )
+        adjusted = holm_adjust_p_values({
+            name: test["exact_two_sided_p_value"] for name, test in tests.items()
+        })
+        for name, adjusted_p in adjusted.items():
+            tests[name]["holm_adjusted_p_value"] = adjusted_p
+        results["paired_tests"][condition] = tests
+        cluster_tests = {
+            metric: paired_subject_cluster_test(
+                results["without_gan"],
+                results[condition],
+                metric=metric,
+                seed=seed + 30_000,
+            )
+            for metric in ("accuracy", "balanced_accuracy", "f1_macro", "mcc")
+        }
+        cluster_adjusted = holm_adjust_p_values({
+            name: test["subject_cluster_randomization_p_value"]
+            for name, test in cluster_tests.items()
+        })
+        for name, adjusted_p in cluster_adjusted.items():
+            cluster_tests[name]["holm_adjusted_p_value"] = adjusted_p
+        results["subject_cluster_tests"][condition] = cluster_tests
     write_json(config.run_dir(dataset, run_name) / "comparison_summary.json", results)
+    write_csv(
+        config.output_dir(dataset, run_name) / "comparison_table.csv",
+        comparison_table_rows(results, model_name),
+    )
+    write_comparison_plot(
+        config.output_dir(dataset, run_name) / "comparison_performance.png",
+        results,
+    )
     return results
 
 
@@ -261,12 +349,26 @@ def summarize_comparison(results: dict, model_name: str):
     print(f"COMPARISON SUMMARY: {model_name}")
     print(f"{'='*70}")
     print("Paired exact sign-flip tests:")
-    for metric, test in results["paired_tests"].items():
-        print(
-            f"  {metric}: delta={test['mean_paired_delta']:+.4f}, "
-            f"p={test['exact_two_sided_p_value']:.4f}"
-        )
-    for condition in ("without_gan", "with_gan"):
+    for condition, tests in results["paired_tests"].items():
+        print(f"  {condition} vs real-only:")
+        for metric, test in tests.items():
+            print(
+                f"    {metric}: delta={test['mean_paired_delta']:+.4f}, "
+                f"p={test['exact_two_sided_p_value']:.4f}, "
+                f"Holm p={test['holm_adjusted_p_value']:.4f}"
+            )
+    print("Primary pooled subject-cluster tests:")
+    for condition, tests in results["subject_cluster_tests"].items():
+        for metric, test in tests.items():
+            low, high = test["subject_cluster_bootstrap_95ci"]
+            print(
+                f"  {condition} {metric}: delta={test['paired_delta']:+.4f}, "
+                f"95% CI=[{low:+.4f}, {high:+.4f}], "
+                f"Holm p={test['holm_adjusted_p_value']:.4f}"
+            )
+    for condition in ("without_gan", "with_gan", "with_simple_augmentation"):
+        if not results.get(condition):
+            continue
         accs = [m["accuracy"] for m in results[condition]]
         f1s = [m["f1_macro"] for m in results[condition]]
         subject_accs = [m["subject_condition_level"]["accuracy"] for m in results[condition]]
@@ -278,7 +380,9 @@ def summarize_comparison(results: dict, model_name: str):
 
 def save_comparison(results: dict, model_name: str, dataset: str = config.DEFAULT_DATASET,
                     seed: int = config.RANDOM_SEED):
-    out_path = config.output_dir(dataset) / f"gan_comparison_{model_name}_seed{seed}.json"
+    run_name = results.get("metadata", {}).get("run_name")
+    filename = f"{run_name}.json" if run_name else f"gan_comparison_{model_name}_seed{seed}.json"
+    out_path = config.output_dir(dataset) / filename
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
@@ -296,6 +400,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=config.RANDOM_SEED)
     parser.add_argument("--synth_fraction", type=float, default=0.25)
     parser.add_argument("--quality_samples_per_class", type=int, default=QUALITY_SAMPLES_PER_CLASS)
+    parser.add_argument("--include_simple_augmentation", action="store_true")
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -305,6 +410,7 @@ if __name__ == "__main__":
         n_folds=args.folds, batch_size=args.batch_size, dataset=args.dataset,
         seed=args.seed, synth_fraction=args.synth_fraction, run_name=args.run_name,
         quality_samples_per_class=args.quality_samples_per_class,
+        include_simple_augmentation=args.include_simple_augmentation,
         overwrite=args.overwrite,
     )
     summarize_comparison(results, args.model)

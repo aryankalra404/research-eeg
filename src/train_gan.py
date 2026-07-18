@@ -38,7 +38,7 @@ from .labeling import build_dataset
 from .preprocessing import load_processed
 from .provenance import build_provenance, write_json
 from .reproducibility import set_seed
-from .synthetic_quality import evaluate_synthetic_quality
+from .synthetic_quality import evaluate_synthetic_quality, save_synthetic_quality_plots
 
 
 N_CRITIC = 5  # critic updates per generator update (standard WGAN-GP ratio)
@@ -50,6 +50,13 @@ QUALITY_SAMPLES_PER_CLASS = 256
 
 
 import time
+
+
+def _synchronize_device(device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elif device.type == "mps" and hasattr(torch, "mps"):
+        torch.mps.synchronize()
 
 def train_gan(X_train, y_train, device, epochs=200, batch_size=64,
               lr: float = GAN_LEARNING_RATE, betas: tuple[float, float] = ADAM_BETAS,
@@ -80,6 +87,8 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64,
     history = {"critic_loss": [], "gen_loss": [], "wasserstein_estimate": []}
 
     epoch_times = []
+    _synchronize_device(device)
+    training_started = time.perf_counter()
     for epoch in range(epochs):
         t0 = time.time()
         epoch_critic_loss, epoch_gen_loss, epoch_wdist = [], [], []
@@ -135,6 +144,10 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64,
                   f"gen_loss={history['gen_loss'][-1]:.3f}  "
                   f"wasserstein_est={history['wasserstein_estimate'][-1]:.3f}  "
                   f"[{avg_epoch_time:.1f}s/epoch, ETA {eta_seconds/60:.1f} min]")
+
+    _synchronize_device(device)
+    history["training_seconds"] = float(time.perf_counter() - training_started)
+    history["mean_epoch_seconds"] = float(np.mean(epoch_times))
 
     return gen, crit, history
 
@@ -402,6 +415,15 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
         X_gan, y_gan, X_quality, y_quality,
         output_dir / "gan_tsne_check.png", class_names=class_names, seed=seed,
     )
+    save_synthetic_quality_plots(
+        X_gan,
+        y_gan,
+        X_quality,
+        y_quality,
+        fs=config.sampling_rate_hz(dataset),
+        output_dir=output_dir,
+        class_names=class_names,
+    )
 
     quality = evaluate_synthetic_quality(
         X_gan,
@@ -409,6 +431,8 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
         X_quality,
         y_quality,
         fs=config.sampling_rate_hz(dataset),
+        X_reference=X_train[inner_val_idx],
+        y_reference=y_train[inner_val_idx],
     )
     quality_path = output_dir / "synthetic_quality.json"
     with open(quality_path, "w") as f:
@@ -430,6 +454,10 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
         "adam_betas": list(ADAM_BETAS),
         "n_critic": N_CRITIC,
         "lambda_gp": LAMBDA_GP,
+        "training_seconds": history["training_seconds"],
+        "mean_epoch_seconds": history["mean_epoch_seconds"],
+        "generator_parameter_count": int(sum(p.numel() for p in gen.parameters())),
+        "critic_parameter_count": int(sum(p.numel() for p in crit.parameters())),
         "augmentation_fraction": augmentation_fraction,
         "quality_samples_per_class": quality_samples_per_class,
         "window_samples": int(X.shape[1]),
