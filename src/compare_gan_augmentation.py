@@ -16,7 +16,7 @@ to the inner-training partition, never to inner-validation or the held-out
 fold.
 
 Usage:
-    python -m src.compare_gan_augmentation --model 1dcnn --gan_epochs 200 --clf_epochs 30
+    python -m src.compare_gan_augmentation --dataset dreamer --model 1dcnn --gan_epochs 200 --clf_epochs 30
 """
 
 import argparse
@@ -36,17 +36,19 @@ from .train_gan import train_gan, generate_synthetic
 
 def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
                     n_folds: int = config.N_FOLDS, batch_size: int = 64,
-                    synth_fraction: float = 1.0):
+                    synth_fraction: float = 1.0, dataset: str = config.DEFAULT_DATASET):
     """
     synth_fraction: amount of synthetic data to add, relative to real training
     set size per class (1.0 = double the minority class up to majority-class
     count; adjust if you want a different augmentation ratio).
     """
+    dataset = config.normalize_dataset_name(dataset)
     set_seed()
     device = config.get_device()
     print(f"Using device: {device}")
+    print(f"Dataset: {dataset}")
 
-    processed = load_processed()
+    processed = load_processed(dataset=dataset)
     X, y, groups = build_dataset(processed)
     print(f"Full dataset: X={X.shape}, y={y.shape}, subjects={len(set(groups))}")
 
@@ -132,8 +134,8 @@ def summarize_comparison(results: dict, model_name: str):
     print(f"{'='*70}")
 
 
-def save_comparison(results: dict, model_name: str):
-    out_path = config.OUTPUTS_DIR / f"gan_comparison_{model_name}.json"
+def save_comparison(results: dict, model_name: str, dataset: str = config.DEFAULT_DATASET):
+    out_path = config.output_dir(dataset) / f"gan_comparison_{model_name}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
@@ -142,6 +144,7 @@ def save_comparison(results: dict, model_name: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
     parser.add_argument("--model", type=str, default="1dcnn")
     parser.add_argument("--gan_epochs", type=int, default=200)
     parser.add_argument("--clf_epochs", type=int, default=30)
@@ -151,7 +154,7 @@ if __name__ == "__main__":
 
     results = run_comparison(
         args.model, gan_epochs=args.gan_epochs, clf_epochs=args.clf_epochs,
-        n_folds=args.folds, batch_size=args.batch_size,
+        n_folds=args.folds, batch_size=args.batch_size, dataset=args.dataset,
     )
     summarize_comparison(results, args.model)
-    save_comparison(results, args.model)
+    save_comparison(results, args.model, dataset=args.dataset)

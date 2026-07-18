@@ -8,9 +8,9 @@ comparable to the Phase 5 augmented-training run later (same folds must
 be reused -- see note at bottom).
 
 Usage:
-    python -m src.train_baseline                  # all 6 models, all folds
-    python -m src.train_baseline --model eegnet    # just one model, for a quick check
-    python -m src.train_baseline --epochs 5        # override epoch count for a smoke test
+    python -m src.train_baseline --dataset dreamer
+    python -m src.train_baseline --dataset dreamer --model eegnet
+    python -m src.train_baseline --dataset dreamer --epochs 5
 """
 
 import argparse
@@ -152,13 +152,16 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
     return metrics, model
 
 
-def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size: int = 64):
+def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size: int = 64,
+            dataset: str = config.DEFAULT_DATASET):
+    dataset = config.normalize_dataset_name(dataset)
     set_seed()
     device = config.get_device()
     print(f"Using device: {device}")
+    print(f"Dataset: {dataset}")
 
     print("Loading processed data...")
-    processed = load_processed()
+    processed = load_processed(dataset=dataset)
     X, y, groups = build_dataset(processed)
     print(f"X: {X.shape}, y: {y.shape}, groups: {len(set(groups))} unique subjects")
 
@@ -213,14 +216,14 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
     return all_results
 
 
-def save_results(results: dict, out_path=None):
+def save_results(results: dict, out_path=None, dataset: str = config.DEFAULT_DATASET):
     """
     Merges new results into the existing results file rather than overwriting
     it, so running one model at a time (e.g. across multiple sessions) doesn't
     destroy previously saved results for other models.
     """
     if out_path is None:
-        out_path = config.OUTPUTS_DIR / "baseline_results.json"
+        out_path = config.output_dir(dataset) / "baseline_results.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing = {}
@@ -252,6 +255,7 @@ def print_summary_table(results: dict):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
     parser.add_argument("--model", type=str, default=None,
                          help="Run just one model (e.g. eegnet). Default: all 6.")
     parser.add_argument("--epochs", type=int, default=30)
@@ -261,12 +265,13 @@ if __name__ == "__main__":
 
     model_names = [args.model] if args.model else list(MODEL_REGISTRY.keys())
 
-    results = run_all(model_names, epochs=args.epochs, n_folds=args.folds, batch_size=args.batch_size)
-    save_results(results)
+    results = run_all(model_names, epochs=args.epochs, n_folds=args.folds,
+                      batch_size=args.batch_size, dataset=args.dataset)
+    save_results(results, dataset=args.dataset)
 
     # Reload the merged file so the printed summary shows every model run so far,
     # not just the ones from this invocation.
-    results_path = config.OUTPUTS_DIR / "baseline_results.json"
+    results_path = config.output_dir(args.dataset) / "baseline_results.json"
     with open(results_path, "r") as f:
         all_results_so_far = json.load(f)
     print_summary_table(all_results_so_far)

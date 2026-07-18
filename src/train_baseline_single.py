@@ -10,9 +10,8 @@ runs, and the GAN training/validation plots are a one-time artifact instead
 of being regenerated 5+ times.
 
 Usage:
-    python -m src.train_baseline_single --model 1dcnn                  # without GAN
-    python -m src.train_baseline_single --model 1dcnn --use_gan        # with GAN
-    python -m src.train_baseline_single --model 1dcnn --use_gan --epochs 50
+    python -m src.train_baseline_single --dataset dreamer --model 1dcnn
+    python -m src.train_baseline_single --dataset dreamer --model 1dcnn --use_gan --gan_run gan_400epoch
 """
 
 import argparse
@@ -27,15 +26,18 @@ from .split import load_split, apply_split_with_groups
 from .train_baseline import train_one_fold, set_seed, split_inner_validation
 
 
-def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64):
+def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64,
+               dataset: str = config.DEFAULT_DATASET, gan_run: str = "gan_400epoch"):
+    dataset = config.normalize_dataset_name(dataset)
     set_seed()
     device = config.get_device()
     print(f"Using device: {device}")
+    print(f"Dataset: {dataset}")
 
-    processed = load_processed()
+    processed = load_processed(dataset=dataset)
     X, y, groups = build_dataset(processed)
 
-    split_info = load_split()
+    split_info = load_split(dataset=dataset)
     X_train, y_train, groups_train, X_test, y_test = apply_split_with_groups(X, y, groups, split_info)
     print(f"Train: {X_train.shape[0]} windows ({len(split_info['train_subjects'])} subjects)")
     print(f"Test:  {X_test.shape[0]} windows ({len(split_info['test_subjects'])} subjects)")
@@ -49,11 +51,14 @@ def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64
 
     condition = "WITHOUT GAN"
     if use_gan:
-        synth_path = config.DATA_PROCESSED / "synthetic_train.npz"
+        synth_path = config.processed_dir(dataset) / f"synthetic_train_{gan_run}.npz"
+        legacy_synth_path = config.processed_dir(dataset) / "synthetic_train.npz"
+        if not synth_path.exists() and legacy_synth_path.exists():
+            synth_path = legacy_synth_path
         if not synth_path.exists():
             raise FileNotFoundError(
                 f"No synthetic data found at {synth_path}. "
-                f"Run `python -m src.train_gan` first to train the GAN and save synthetic data."
+                f"Run `python -m src.train_gan --dataset {dataset} --run_name {gan_run}` first."
             )
         synth_data = np.load(synth_path)
         X_synth, y_synth = synth_data["X_synth"], synth_data["y_synth"]
@@ -85,8 +90,8 @@ def run_single(model_name: str, use_gan: bool, epochs: int, batch_size: int = 64
     return metrics
 
 
-def save_result(model_name: str, use_gan: bool, metrics: dict):
-    out_path = config.OUTPUTS_DIR / "single_split_results.json"
+def save_result(model_name: str, use_gan: bool, metrics: dict, dataset: str = config.DEFAULT_DATASET):
+    out_path = config.output_dir(dataset) / "single_split_results.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing = {}
@@ -116,11 +121,14 @@ def save_result(model_name: str, use_gan: bool, metrics: dict):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
     parser.add_argument("--model", type=str, default="1dcnn")
     parser.add_argument("--use_gan", action="store_true", help="Augment training data with saved synthetic data")
+    parser.add_argument("--gan_run", type=str, default="gan_400epoch")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=64)
     args = parser.parse_args()
 
-    metrics = run_single(args.model, use_gan=args.use_gan, epochs=args.epochs, batch_size=args.batch_size)
-    save_result(args.model, args.use_gan, metrics)
+    metrics = run_single(args.model, use_gan=args.use_gan, epochs=args.epochs,
+                         batch_size=args.batch_size, dataset=args.dataset, gan_run=args.gan_run)
+    save_result(args.model, args.use_gan, metrics, dataset=args.dataset)

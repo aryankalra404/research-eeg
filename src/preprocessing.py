@@ -8,9 +8,10 @@ Design notes (based on actual DREAMER shapes confirmed via data_loader.py):
     per trial, handled naturally by sliding-window epoching per clip.
 
 Usage:
-    python -m src.preprocessing   # runs full pipeline, saves to data/processed/
+    python -m src.preprocessing --dataset dreamer
 """
 
+import argparse
 from dataclasses import dataclass
 
 import numpy as np
@@ -243,7 +244,8 @@ def process_all_subjects(subjects: list[SubjectData]) -> list[ProcessedSubject]:
 # ---------------------------------------------------------------------------
 # Save / load processed data
 # ---------------------------------------------------------------------------
-def save_processed(processed: list[ProcessedSubject], out_dir=config.DATA_PROCESSED) -> None:
+def save_processed(processed: list[ProcessedSubject], out_dir=None) -> None:
+    out_dir = out_dir or config.processed_dir("dreamer")
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in processed:
         np.savez_compressed(
@@ -257,11 +259,17 @@ def save_processed(processed: list[ProcessedSubject], out_dir=config.DATA_PROCES
     print(f"Saved {len(processed)} subject files to {out_dir}")
 
 
-def load_processed(in_dir=config.DATA_PROCESSED) -> list[ProcessedSubject]:
+def load_processed(in_dir=None, dataset: str = config.DEFAULT_DATASET) -> list[ProcessedSubject]:
+    in_dir = in_dir or config.processed_dir(dataset)
     files = sorted(in_dir.glob("subject_*.npz"))
+    if not files and config.normalize_dataset_name(dataset) == "dreamer":
+        legacy_files = sorted(config.DATA_PROCESSED.glob("subject_*.npz"))
+        if legacy_files:
+            in_dir = config.DATA_PROCESSED
+            files = legacy_files
     if not files:
         raise FileNotFoundError(
-            f"No processed files found in {in_dir}. Run `python -m src.preprocessing` first."
+            f"No processed files found in {in_dir}. Run `python -m src.preprocessing --dataset {dataset}` first."
         )
     processed = []
     for f in files:
@@ -280,7 +288,14 @@ def load_processed(in_dir=config.DATA_PROCESSED) -> list[ProcessedSubject]:
     return processed
 
 
-if __name__ == "__main__":
+def run_preprocessing(dataset: str = config.DEFAULT_DATASET):
+    dataset = config.normalize_dataset_name(dataset)
+    if dataset != "dreamer":
+        raise NotImplementedError(
+            f"{dataset.upper()} preprocessing is not implemented yet. Add a dataset loader first, "
+            f"then save standardized subject_*.npz files to {config.processed_dir(dataset)}."
+        )
+
     print("Loading raw DREAMER data...")
     subjects = load_dreamer_mat()
 
@@ -294,4 +309,12 @@ if __name__ == "__main__":
           f"max={max(p.windows.shape[0] for p in processed)}, "
           f"mean={total_windows / len(processed):.1f}")
 
-    save_processed(processed)
+    save_processed(processed, out_dir=config.processed_dir(dataset))
+    return processed
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
+    args = parser.parse_args()
+    run_preprocessing(args.dataset)

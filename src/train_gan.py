@@ -1,10 +1,10 @@
 """
 Trains the CWGAN-GP on REAL TRAINING DATA ONLY from one CV fold (never on
 validation/test subjects -- that would leak information). Produces:
-    - trained generator checkpoint (models/cwgan_gp_generator.pt)
-    - loss curve plot (outputs/gan_training_loss.png)
-    - real vs synthetic waveform comparison plot (outputs/gan_waveform_check.png)
-    - real vs synthetic t-SNE overlay (outputs/gan_tsne_check.png)
+    - trained generator checkpoint (models/<dataset>/<run>/cwgan_gp_generator.pt)
+    - loss curve plot (outputs/<dataset>/<run>/gan_training_loss.png)
+    - real vs synthetic waveform comparison plot (outputs/<dataset>/<run>/gan_waveform_check.png)
+    - real vs synthetic t-SNE overlay (outputs/<dataset>/<run>/gan_tsne_check.png)
 
 IMPORTANT: run this per-fold if you want strict fold isolation (train GAN
 only on that fold's training subjects), or once on the full training pool
@@ -12,11 +12,16 @@ if you're doing a simpler single train/test split for the with/without-GAN
 comparison your teacher asked for. See train_gan_pipeline() args.
 
 Usage:
-    python -m src.train_gan --epochs 200
+    python -m src.train_gan --dataset dreamer --epochs 200
 """
 
 import argparse
+import os
+from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("XDG_CACHE_HOME", str(_PROJECT_ROOT / ".cache"))
+os.environ.setdefault("MPLCONFIGDIR", str(_PROJECT_ROOT / ".cache" / "matplotlib"))
 import matplotlib
 matplotlib.use("Agg")  # no display needed, just save figures
 import matplotlib.pyplot as plt
@@ -226,7 +231,8 @@ def plot_tsne_overlay(X_real, y_real, X_synth, y_synth, out_path, max_points=100
 # ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
-def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None):
+def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
+                       dataset: str = config.DEFAULT_DATASET, run_name: str | None = None):
     """
     Trains CWGAN-GP on the TRAINING SPLIT ONLY (from src/split.py -- never
     touches test subjects), then generates and SAVES synthetic data to
@@ -236,13 +242,19 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None):
     """
     from .split import load_split, apply_split
 
+    dataset = config.normalize_dataset_name(dataset)
+    run_name = run_name or f"gan_{epochs}epoch"
+    processed_dir = config.processed_dir(dataset)
+    model_dir = config.model_dir(dataset, run_name)
+    output_dir = config.output_dir(dataset, run_name)
     device = config.get_device()
     print(f"Using device: {device}")
+    print(f"Dataset: {dataset} | run: {run_name}")
 
-    processed = load_processed()
+    processed = load_processed(dataset=dataset)
     X, y, groups = build_dataset(processed)
 
-    split_info = load_split()
+    split_info = load_split(dataset=dataset)
     X_train, y_train, X_test, y_test = apply_split(X, y, groups, split_info)
     print(f"Training GAN on TRAIN split only: X_train={X_train.shape} "
           f"(test split held out: {X_test.shape[0]} windows, never seen by GAN)")
@@ -251,14 +263,14 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None):
 
     gen, crit, history = train_gan(X_train, y_train, device=device, epochs=epochs, batch_size=batch_size)
 
-    config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    torch.save(gen.state_dict(), config.MODELS_DIR / "cwgan_gp_generator.pt")
-    torch.save(crit.state_dict(), config.MODELS_DIR / "cwgan_gp_critic.pt")
-    print(f"Saved generator/critic checkpoints to {config.MODELS_DIR}")
+    model_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(gen.state_dict(), model_dir / "cwgan_gp_generator.pt")
+    torch.save(crit.state_dict(), model_dir / "cwgan_gp_critic.pt")
+    print(f"Saved generator/critic checkpoints to {model_dir}")
 
     # Validation plots
-    config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    plot_loss_curve(history, config.OUTPUTS_DIR / "gan_training_loss.png")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plot_loss_curve(history, output_dir / "gan_training_loss.png")
 
     # Decide how much synthetic data to generate: by default, balance the
     # minority (stress) class up to match the majority (non-stress) class
@@ -291,20 +303,20 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None):
     y_synth = np.concatenate(y_synth_list, axis=0) if y_synth_list else np.empty((0,), dtype=np.int64)
 
     # SAVE the synthetic data to disk -- this is the actual deliverable file
-    synth_path = config.DATA_PROCESSED / "synthetic_train.npz"
+    synth_path = processed_dir / f"synthetic_train_{run_name}.npz"
     np.savez_compressed(synth_path, X_synth=X_synth, y_synth=y_synth)
     print(f"\nSaved {len(y_synth)} synthetic windows to {synth_path}")
     print(f"  synthetic class 0 (non-stress): {(y_synth==0).sum()}")
     print(f"  synthetic class 1 (stress):     {(y_synth==1).sum()}")
 
     # Validation plots comparing real TRAIN data to the saved synthetic data
-    plot_waveform_comparison(X_train, y_train, X_synth, y_synth, config.OUTPUTS_DIR / "gan_waveform_check.png")
-    plot_tsne_overlay(X_train, y_train, X_synth, y_synth, config.OUTPUTS_DIR / "gan_tsne_check.png")
+    plot_waveform_comparison(X_train, y_train, X_synth, y_synth, output_dir / "gan_waveform_check.png")
+    plot_tsne_overlay(X_train, y_train, X_synth, y_synth, output_dir / "gan_tsne_check.png")
 
     print(f"\nGAN training complete. Review:")
-    print(f"  {config.OUTPUTS_DIR / 'gan_training_loss.png'}")
-    print(f"  {config.OUTPUTS_DIR / 'gan_waveform_check.png'}")
-    print(f"  {config.OUTPUTS_DIR / 'gan_tsne_check.png'}")
+    print(f"  {output_dir / 'gan_training_loss.png'}")
+    print(f"  {output_dir / 'gan_waveform_check.png'}")
+    print(f"  {output_dir / 'gan_tsne_check.png'}")
     print(f"before trusting {synth_path} for the with-GAN classifier run.")
 
     return gen, history
@@ -312,8 +324,11 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
+    parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch_size", type=int, default=64)
     args = parser.parse_args()
 
-    train_gan_pipeline(epochs=args.epochs, batch_size=args.batch_size)
+    train_gan_pipeline(epochs=args.epochs, batch_size=args.batch_size,
+                       dataset=args.dataset, run_name=args.run_name)

@@ -101,5 +101,5 @@ def summarize_labels(processed: list[ProcessedSubject]) -> None:
 
 
 if __name__ == "__main__":
-    processed = load_processed()
+    processed = load_processed(dataset=config.DEFAULT_DATASET)
     summarize_labels(processed)

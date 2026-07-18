@@ -1,120 +1,477 @@
-# Stress Detection from EEG (Emotiv EPOC) — Research Pipeline
+# Stress Detection from EEG - Research Pipeline
 
-Pipeline: DREAMER preprocessing → CWGAN-GP augmentation → benchmark against
-1D-CNN, Vanilla LSTM, EEGNet, DeepConvNet, ShallowConvNet, TemporalCNN.
+This repository is a code-first research pipeline for EEG-based stress detection.
+It is organized to support multiple datasets, GAN-based augmentation, and
+comparisons across existing neural network classifiers.
 
-## Folder structure and what goes where
+Current implementation: DREAMER.
+Planned datasets: STEW, IUB, DASPS.
 
-```
-stress-eeg-project/
-├── README.md              ← you are here
-├── requirements.txt        ← Python dependencies, install with:
-│                              pip install -r requirements.txt
-│
-├── data/
-│   ├── raw/                ← RAW, UNTOUCHED source files go here.
-│   │                          Put DREAMER.mat here (download from
-│   │                          https://zenodo.org/records/546113).
-│   │                          Later: STEW/DASPS raw files also go here,
-│   │                          each in its own subfolder e.g. raw/stew/, raw/dasps/.
-│   │                          Never edit files in raw/ — treat as read-only source of truth.
-│   │
-│   └── processed/          ← OUTPUT of the preprocessing pipeline (Phase 1).
-│                              Filtered, epoched, normalized EEG windows +
-│                              labels, saved as .npy/.npz/.pkl.
-│                              This is what your training scripts actually load —
-│                              never re-run raw preprocessing inside a training loop.
-│                              Safe to delete and regenerate anytime from raw/.
-│
-├── src/                    ← ALL pipeline code (importable Python modules, not
-│   │                          one-off scripts). This is the actual pipeline logic.
-│   ├── __init__.py
-│   ├── config.py            ← single source of truth for every pipeline decision:
-│   │                          filter cutoffs, window size, label thresholds,
-│   │                          split protocol, random seed, device selection.
-│   │                          Change values HERE, not inline in other scripts.
-│   ├── data_loader.py        ← loads DREAMER.mat → clean per-subject Python objects.
-│   │                          (Phase 1 will add: preprocessing.py, labeling.py,
-│   │                          features.py, datasets.py for PyTorch Dataset classes)
-│   │                          (Phase 4 will add: gan.py for CWGAN-GP)
-│   │                          (Phase 2/5 will add: models.py, train.py, evaluate.py)
-│   │
-│   └── (future files land here as we build each phase — keeps all logic in
-│         one importable package instead of scattered notebooks)
-│
-├── notebooks/               ← EXPLORATION ONLY. Jupyter notebooks for:
-│                                - visually inspecting raw/filtered EEG signals
-│                                - plotting label distributions, class balance
-│                                - t-SNE/UMAP plots for GAN validation
-│                                - ad-hoc debugging
-│                              Nothing in here should be required for the
-│                              pipeline to run — if a notebook produces
-│                              something the pipeline depends on, that logic
-│                              belongs in src/ instead.
-│
-├── models/                   ← SAVED MODEL WEIGHTS (checkpoints).
-│                                e.g. models/cwgan_gp_generator.pt,
-│                                models/eegnet_fold3.pt
-│                                Not committed to git if large — see .gitignore note below.
-│
-└── outputs/                  ← RESULTS: metrics tables (csv), confusion
-                                 matrices, plots, the actual numbers/figures
-                                 that go into your paper. Anything you'd want
-                                 to screenshot or copy into a LaTeX/Word doc
-                                 for the paper lives here.
+Main experiment idea:
+
+```text
+raw EEG dataset
+  -> preprocessing
+  -> subject-independent split
+  -> baseline classifiers without GAN
+  -> CWGAN-GP synthetic EEG generation
+  -> classifiers with GAN augmentation
+  -> comparison tables/plots for research writeup
 ```
 
-## Recommended .gitignore (if you haven't set one up)
+Implemented model families include 1D-CNN, Vanilla LSTM, EEGNet, DeepConvNet,
+ShallowConvNet, and TemporalCNN.
 
+## Current Status
+
+DREAMER is the only dataset fully wired into the pipeline right now.
+
+The current local DREAMER setup has been checked with:
+
+```bash
+python3 scripts/check_setup.py --dataset dreamer
 ```
+
+Expected status:
+
+```text
+raw files: OK, 2 files
+processed subjects: OK, 23 subject files
+split: OK
+synthetic GAN data: OK, 2 files
+model checkpoints: OK, 4 .pt files
+outputs: OK, 7 files
+runs directory: OK
+```
+
+Known existing DREAMER artifacts:
+
+```text
+data/raw/dreamer/DREAMER.mat
+data/raw/dreamer/DREAMER.pdf
+
+data/processed/dreamer/subject_01.npz ... subject_23.npz
+data/processed/dreamer/split.json
+data/processed/dreamer/synthetic_train_gan_400epoch.npz
+data/processed/dreamer/synthetic_train_gan_200epoch_backup.npz
+
+models/dreamer/gan_400epoch/cwgan_gp_generator.pt
+models/dreamer/gan_400epoch/cwgan_gp_critic.pt
+models/dreamer/gan_200epoch_backup/cwgan_gp_generator.pt
+models/dreamer/gan_200epoch_backup/cwgan_gp_critic.pt
+
+outputs/dreamer/baseline_results.json
+outputs/dreamer/gan_400epoch/gan_training_loss.png
+outputs/dreamer/gan_400epoch/gan_waveform_check.png
+outputs/dreamer/gan_400epoch/gan_tsne_check.png
+outputs/dreamer/gan_200epoch_backup/gan_training_loss.png
+outputs/dreamer/gan_200epoch_backup/gan_waveform_check.png
+outputs/dreamer/gan_200epoch_backup/gan_tsne_check.png
+```
+
+The current `gan_400epoch` synthetic data file contains synthetic DREAMER
+training windows generated by the CWGAN-GP run:
+
+```text
+data/processed/dreamer/synthetic_train_gan_400epoch.npz
+```
+
+## Repository Layout
+
+```text
+research-ml-eeg/
+  README.md
+  requirements.txt
+  .gitignore
+
+  data/
+    raw/
+      dreamer/
+      stew/
+      iub/
+      dasps/
+    processed/
+      dreamer/
+      stew/
+      iub/
+      dasps/
+
+  models/
+    dreamer/
+    stew/
+    iub/
+    dasps/
+
+  outputs/
+    dreamer/
+    stew/
+    iub/
+    dasps/
+
+  runs/
+    dreamer/
+    stew/
+    iub/
+    dasps/
+
+  src/
+  scripts/
+  docs/
+  notebooks/
+```
+
+## What Each Folder Is For
+
+`data/raw/`
+
+Raw, untouched dataset files. These are the original source files downloaded
+from dataset providers. Do not edit these manually. Each dataset gets its own
+folder.
+
+Example:
+
+```text
+data/raw/dreamer/DREAMER.mat
+```
+
+`data/processed/`
+
+Preprocessed dataset files used by training scripts. These are generated from
+`data/raw/` by preprocessing code. They can be deleted and regenerated if the
+preprocessing settings change.
+
+For DREAMER, this contains:
+
+```text
+subject_*.npz
+split.json
+synthetic_train_<gan_run>.npz
+```
+
+`models/`
+
+Saved model checkpoints, separated by dataset and run name. GAN generator and
+critic checkpoints live here, along with future classifier checkpoints.
+
+Example:
+
+```text
+models/dreamer/gan_400epoch/cwgan_gp_generator.pt
+models/dreamer/gan_400epoch/cwgan_gp_critic.pt
+```
+
+`outputs/`
+
+Research outputs: metric JSON files, plots, validation figures, confusion
+matrices, and anything likely to go into a paper or presentation.
+
+Example:
+
+```text
+outputs/dreamer/gan_400epoch/gan_training_loss.png
+outputs/dreamer/gan_400epoch/gan_tsne_check.png
+outputs/dreamer/baseline_results.json
+```
+
+`runs/`
+
+Reserved for experiment manifests and logs. Use this for future reproducibility:
+dataset name, model name, seed, split, preprocessing config, GAN epochs,
+classifier epochs, and output paths.
+
+Recommended future file:
+
+```text
+runs/dreamer/gan_400epoch/manifest.json
+```
+
+`src/`
+
+All real pipeline code. This is the importable Python package for data loading,
+preprocessing, labeling, splitting, GAN training, classifier training, and
+comparison logic.
+
+Important files:
+
+```text
+src/config.py
+src/data_loader.py
+src/preprocessing.py
+src/labeling.py
+src/split.py
+src/gan.py
+src/train_gan.py
+src/train_baseline.py
+src/train_baseline_single.py
+src/compare_gan_augmentation.py
+src/models.py
+```
+
+`scripts/`
+
+Small helper scripts that are not core model code.
+
+Current helper:
+
+```text
+scripts/check_setup.py
+```
+
+`docs/`
+
+Research workflow notes and longer documentation.
+
+Current doc:
+
+```text
+docs/research_workflow.md
+```
+
+`notebooks/`
+
+Exploration only. Use notebooks for EDA, one-off plots, debugging, and visual
+inspection. If notebook logic becomes required for the pipeline, move it into
+`src/`.
+
+## What `.gitkeep` Means
+
+Git does not track empty folders. A `.gitkeep` file is a tiny placeholder that
+forces Git to preserve an otherwise empty folder.
+
+Example: `data/raw/stew/.gitkeep` means the STEW raw-data folder exists in Git
+even before the actual STEW dataset files are added locally.
+
+`.gitkeep` has no effect on Python code, training, data loading, or results. It
+is only there so teammates and AI agents can see the intended folder structure
+after cloning the repo.
+
+## Git And Artifact Policy
+
+This repo should keep code and lightweight docs in Git.
+
+Large research artifacts are ignored by Git:
+
+```text
 data/raw/*
 data/processed/*
-models/*.pt
-models/*.pth
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
+models/**/*.pt
+models/**/*.pth
+outputs/**/*.png
+outputs/**/*.json
+runs/**/*.json
+runs/**/*.log
 ```
 
-Raw data and trained weights are large and shouldn't go in git — keep the
-repo to code only, and note in this README where to download DREAMER.mat from
-so anyone (including future-you on the other machine) can regenerate
-everything.
+Share these files outside normal Git using Google Drive, OneDrive, Dropbox,
+GitHub Releases, Hugging Face, or institutional storage.
+
+When sending results to the team, include:
+
+```text
+data/processed/<dataset>/synthetic_train_<run>.npz
+models/<dataset>/<run>/
+outputs/<dataset>/<run>/
+runs/<dataset>/<run>/manifest.json
+```
+
+Do not commit raw datasets, `.npz` processed data, or `.pt` model checkpoints to
+regular Git unless the team explicitly decides to use Git LFS.
 
 ## Setup
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Quick sanity check
+On some systems, use:
 
 ```bash
-python -m src.data_loader
+python3 -m pip install -r requirements.txt
 ```
 
-Should load DREAMER.mat and print channel counts, clip length ranges, and
-subject 1's valence/arousal scores. If this fails, check that DREAMER.mat is
-actually at `data/raw/DREAMER.mat`.
+## DREAMER Commands
 
-## Pipeline phases (see project plan for full detail)
+Check that DREAMER raw data loads:
 
-- **Phase 0** — label definition, split protocol (locked in `config.py`)
-- **Phase 1** — preprocessing (bandpass filter, baseline correction, epoching, normalization)
-- **Phase 2** — baseline classification on real data only (all 6 models)
-- **Phase 3** — class imbalance check
-- **Phase 4** — CWGAN-GP training (feature-level augmentation)
-- **Phase 5** — re-run classifiers with augmented training data
-- **Phase 6** — analysis, comparison tables, writeup
+```bash
+python3 -m src.data_loader
+```
 
-## Datasets
+Check processed labels and class balance:
 
-- **DREAMER** (primary) — 14ch Emotiv EPOC, valence/arousal/dominance self-report,
-  used as a proxy stress label via the arousal-valence quadrant model.
-  https://zenodo.org/records/546113
-- **STEW** (planned addition) — 14ch Emotiv EPOC, direct 0-9 workload/stress rating.
-- **DASPS** (planned addition) — 14ch Emotiv EPOC+, HAM-A anxiety-labeled.
+```bash
+python3 -m src.labeling
+```
 
-Note: all three use proxy or adjacent constructs for "stress" (emotion,
-workload, anxiety respectively) — this is stated explicitly in the paper's
-limitations, not something to gloss over.
+Audit the folder/artifact setup:
+
+```bash
+python3 scripts/check_setup.py --dataset dreamer
+```
+
+Preprocess DREAMER:
+
+```bash
+python3 -m src.preprocessing --dataset dreamer
+```
+
+Create the fixed subject-independent split:
+
+```bash
+python3 -m src.split --dataset dreamer
+```
+
+Train a DREAMER GAN:
+
+```bash
+python3 -m src.train_gan --dataset dreamer --run_name gan_400epoch --epochs 400 --batch_size 64
+```
+
+Train one classifier without GAN:
+
+```bash
+python3 -m src.train_baseline_single --dataset dreamer --model eegnet --epochs 30
+```
+
+Train one classifier with saved GAN data:
+
+```bash
+python3 -m src.train_baseline_single --dataset dreamer --model eegnet --use_gan --gan_run gan_400epoch --epochs 30
+```
+
+Run cross-validation baselines:
+
+```bash
+python3 -m src.train_baseline --dataset dreamer --model eegnet --epochs 30 --folds 5
+```
+
+Run the stricter per-fold GAN comparison for research reporting:
+
+```bash
+python3 -m src.compare_gan_augmentation --dataset dreamer --model eegnet --gan_epochs 200 --clf_epochs 30 --folds 5
+```
+
+## Recommended Experiment Naming
+
+Use descriptive run names so artifacts do not overwrite each other.
+
+Good examples:
+
+```text
+gan_400epoch
+gan_400epoch_seed42_balanced
+gan_200epoch_backup
+eegnet_30epoch_without_gan
+eegnet_30epoch_with_gan_400epoch
+```
+
+Avoid vague names like:
+
+```text
+test
+new
+final
+latest
+```
+
+## Pipeline Phases
+
+Phase 0: label definition and split protocol.
+
+Phase 1: preprocessing, including filtering, baseline correction, epoching,
+artifact rejection, and normalization.
+
+Phase 2: baseline classification on real data only.
+
+Phase 3: class imbalance checks.
+
+Phase 4: CWGAN-GP training and synthetic EEG generation.
+
+Phase 5: classifier training with GAN-augmented data.
+
+Phase 6: analysis, comparison tables, figures, and writeup.
+
+## Dataset Notes
+
+DREAMER:
+
+14-channel Emotiv EPOC EEG. Uses valence/arousal/dominance self-report. Current
+labeling uses a proxy stress definition: high arousal plus low valence.
+Source: https://zenodo.org/records/546113
+
+STEW:
+
+Planned. 14-channel Emotiv EPOC workload/stress dataset with direct workload
+ratings. Loader not implemented yet.
+
+IUB:
+
+Planned. Add source, channel layout, sampling rate, label definition, and loader
+details once raw data is available.
+
+DASPS:
+
+Planned. 14-channel Emotiv EPOC+ anxiety dataset using HAM-A labels. Loader not
+implemented yet.
+
+Important research limitation: DREAMER, STEW, IUB, and DASPS may not all measure
+the exact same construct. DREAMER uses emotion-based stress proxy labels, STEW is
+closer to workload/stress, and DASPS is anxiety-labeled. This must be stated in
+the paper instead of treated as identical ground truth.
+
+## Adding A New Dataset
+
+For STEW, IUB, or DASPS, add a dataset-specific raw loader and convert data into
+the same standardized processed format used by DREAMER.
+
+Target processed format:
+
+```text
+subject_XX.npz
+  windows: float32 array, shape (N, T, C)
+  trial_idx: integer array, shape (N,)
+  label fields required by that dataset labeler
+```
+
+Keep the split subject-independent whenever subject IDs are available.
+
+Never train the GAN on held-out test subjects. Synthetic data should only be
+generated from training subjects and only added to training partitions.
+
+## Notes For Future AI Agents
+
+Start by reading:
+
+```text
+README.md
+docs/research_workflow.md
+src/config.py
+scripts/check_setup.py
+```
+
+Before changing training logic, inspect:
+
+```text
+src/preprocessing.py
+src/labeling.py
+src/split.py
+src/train_gan.py
+src/train_baseline.py
+src/train_baseline_single.py
+src/compare_gan_augmentation.py
+```
+
+Do not flatten dataset folders back into global `data/processed`, `models`, or
+`outputs`. Every dataset should stay isolated under its own dataset folder.
+
+Do not move large artifacts into Git. Keep `.gitkeep` files, but leave raw data,
+processed data, checkpoints, and output artifacts ignored unless Git LFS is
+explicitly requested.
+
+If checking whether the current local setup is healthy, run:
+
+```bash
+python3 scripts/check_setup.py --dataset dreamer
+```

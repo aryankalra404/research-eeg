@@ -1,5 +1,5 @@
 """
-Central configuration for the DREAMER stress-detection pipeline.
+Central configuration for the EEG stress-detection research pipeline.
 Change values here rather than scattering magic numbers across scripts.
 """
 
@@ -9,12 +9,48 @@ from pathlib import Path
 # Paths
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_RAW = PROJECT_ROOT / "data" / "raw"
-DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
+DATA_DIR = PROJECT_ROOT / "data"
+DATA_RAW = DATA_DIR / "raw"
+DATA_PROCESSED = DATA_DIR / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+RUNS_DIR = PROJECT_ROOT / "runs"
 
-DREAMER_MAT_PATH = DATA_RAW / "DREAMER.mat"
+SUPPORTED_DATASETS = ("dreamer", "stew", "iub", "dasps")
+DEFAULT_DATASET = "dreamer"
+
+
+def normalize_dataset_name(dataset: str | None) -> str:
+    name = (dataset or DEFAULT_DATASET).strip().lower()
+    if name not in SUPPORTED_DATASETS:
+        raise ValueError(f"Unknown dataset '{dataset}'. Expected one of: {', '.join(SUPPORTED_DATASETS)}")
+    return name
+
+
+def raw_dir(dataset: str | None = None) -> Path:
+    return DATA_RAW / normalize_dataset_name(dataset)
+
+
+def processed_dir(dataset: str | None = None) -> Path:
+    return DATA_PROCESSED / normalize_dataset_name(dataset)
+
+
+def model_dir(dataset: str | None = None, run_name: str | None = None) -> Path:
+    path = MODELS_DIR / normalize_dataset_name(dataset)
+    return path / run_name if run_name else path
+
+
+def output_dir(dataset: str | None = None, run_name: str | None = None) -> Path:
+    path = OUTPUTS_DIR / normalize_dataset_name(dataset)
+    return path / run_name if run_name else path
+
+
+def run_dir(dataset: str | None = None, run_name: str | None = None) -> Path:
+    path = RUNS_DIR / normalize_dataset_name(dataset)
+    return path / run_name if run_name else path
+
+
+DREAMER_MAT_PATH = raw_dir("dreamer") / "DREAMER.mat"
 
 # ---------------------------------------------------------------------------
 # DREAMER dataset constants (from the official readme — do not change)

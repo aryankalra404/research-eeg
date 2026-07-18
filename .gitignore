@@ -1,15 +1,39 @@
 # Data (large, regenerable from raw source or the pipeline itself)
 data/raw/*
+data/raw/**/*
 !data/raw/.gitkeep
+!data/raw/*/
+!data/raw/*/.gitkeep
 data/processed/*
+data/processed/**/*
 !data/processed/.gitkeep
+!data/processed/*/
+!data/processed/*/.gitkeep
 
 # Model checkpoints (large, regenerable from training)
-models/*.pt
-models/*.pth
-models/*.h5
-models/*.ckpt
+models/**/*.pt
+models/**/*.pth
+models/**/*.h5
+models/**/*.ckpt
 !models/.gitkeep
+!models/*/
+!models/*/.gitkeep
+
+# Research outputs/artifacts
+outputs/**/*.png
+outputs/**/*.jpg
+outputs/**/*.jpeg
+outputs/**/*.pdf
+outputs/**/*.csv
+outputs/**/*.json
+!outputs/.gitkeep
+!outputs/*/
+!outputs/*/.gitkeep
+runs/**/*.json
+runs/**/*.log
+!runs/.gitkeep
+!runs/*/
+!runs/*/.gitkeep
 
 # Python
 __pycache__/
@@ -19,6 +43,7 @@ __pycache__/
 .eggs/
 build/
 dist/
+.cache/
 
 # Virtual environments
 venv/

@@ -35,7 +35,7 @@ class SubjectData:
     dominance: np.ndarray  # (18,)
 
 
-def load_dreamer_mat(path: Path = config.DREAMER_MAT_PATH) -> list[SubjectData]:
+def load_dreamer_mat(path: Path | None = None) -> list[SubjectData]:
     """
     Loads DREAMER.mat and returns a list of SubjectData, one per subject.
 
@@ -44,6 +44,11 @@ def load_dreamer_mat(path: Path = config.DREAMER_MAT_PATH) -> list[SubjectData]:
     Anthropic/UWS ever re-releases it as v7.3 — check version if this fails).
     """
     from scipy.io import loadmat
+
+    path = path or config.DREAMER_MAT_PATH
+    legacy_path = config.DATA_RAW / "DREAMER.mat"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
 
     if not path.exists():
         raise FileNotFoundError(
