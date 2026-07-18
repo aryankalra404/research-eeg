@@ -1,11 +1,11 @@
-# Stress Detection from EEG - Research Pipeline
+# EEG Workload and Stress Research Pipeline
 
-This repository is a code-first research pipeline for EEG-based stress detection.
+This repository is a code-first research pipeline for EEG classification.
 It is organized to support multiple datasets, GAN-based augmentation, and
 comparisons across existing neural network classifiers.
 
-Current implementation: DREAMER.
-Planned datasets: STEW, IUB, DASPS.
+Current implementations: DREAMER and STEW.
+Planned datasets: IUB, DASPS.
 
 Main experiment idea:
 
@@ -19,12 +19,27 @@ raw EEG dataset
   -> comparison tables/plots for research writeup
 ```
 
-Implemented model families include 1D-CNN, Vanilla LSTM, EEGNet, DeepConvNet,
-ShallowConvNet, and TemporalCNN.
+Implemented model families include 1D-CNN, Vanilla LSTM, TemporalCNN, and
+explicitly named EEGNet/DeepConvNet/ShallowConvNet adaptations. The literature-
+derived networks are not presented as exact reproductions of the original models.
 
 ## Current Status
 
-DREAMER is the only dataset fully wired into the pipeline right now.
+STEW is the active/default dataset. It has raw loading, condition-based labels,
+leakage-free window normalization, STEW-calibrated artifact rejection,
+subject-independent splitting, six baseline classifiers, strict CWGAN-GP
+isolation, deterministic seeds, run manifests, and synthetic-quality metrics.
+
+For STEW, the target is workload condition, not clinical stress:
+
+```text
+class 0 = rest / low workload
+class 1 = SIMKAP multitasking / high workload
+```
+
+The GAN trains only on inner-training subjects. Classifier-validation and final
+test subjects are excluded from GAN training. Saved synthetic files include the
+dataset, seed, and all three subject lists; mismatched files are rejected.
 
 The current local DREAMER setup has been checked with:
 
@@ -82,6 +97,7 @@ data/processed/dreamer/synthetic_train_gan_400epoch.npz
 research-ml-eeg/
   README.md
   requirements.txt
+  requirements-lock.txt
   .gitignore
 
   data/
@@ -175,11 +191,11 @@ outputs/dreamer/baseline_results.json
 
 `runs/`
 
-Reserved for experiment manifests and logs. Use this for future reproducibility:
-dataset name, model name, seed, split, preprocessing config, GAN epochs,
-classifier epochs, and output paths.
+Tracked experiment manifests and histories. Manifests include model settings,
+subject assignments, metrics, Git revision/dirty state, runtime versions, raw
+dataset checksum, split checksum, and preprocessing configuration.
 
-Recommended future file:
+Example:
 
 ```text
 runs/dreamer/gan_400epoch/manifest.json
@@ -291,6 +307,79 @@ On some systems, use:
 python3 -m pip install -r requirements.txt
 ```
 
+To recreate the exact verified environment instead of installing compatible
+version ranges:
+
+```bash
+python3 -m pip install -r requirements-lock.txt
+```
+
+## STEW Commands
+
+Run the protocol tests:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Audit and preprocess STEW:
+
+```bash
+python3 scripts/check_setup.py --dataset stew
+python3 -m src.diagnose_artifacts --dataset stew
+python3 -m src.preprocessing --dataset stew
+python3 -m src.split --dataset stew
+python3 -m src.labeling --dataset stew
+```
+
+Run all six real-data baselines with subject-independent cross-validation:
+
+```bash
+python3 -m src.train_baseline --dataset stew --epochs 30 --folds 5 --seed 42
+```
+
+Train a fixed-split GAN. It uses only deterministic inner-training subjects:
+
+```bash
+python3 -m src.train_gan --dataset stew --run_name gan_400epoch_seed42_frac25 --epochs 400 --batch_size 64 --seed 42 --augmentation_fraction 0.25
+```
+
+Compare one classifier on the fixed split:
+
+```bash
+python3 -m src.train_baseline_single --dataset stew --model eegnet_adapted --epochs 30 --seed 42
+python3 -m src.train_baseline_single --dataset stew --model eegnet_adapted --use_gan --gan_run gan_400epoch_seed42_frac25 --epochs 30 --seed 42
+```
+
+Run the stricter per-fold comparison used for research reporting:
+
+```bash
+python3 -m src.compare_gan_augmentation --dataset stew --model eegnet_adapted --gan_epochs 200 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25
+```
+
+Every fixed-split GAN run saves:
+
+```text
+runs/stew/<run>/manifest.json
+runs/stew/<run>/training_history.json
+outputs/stew/<run>/synthetic_quality.json
+```
+
+The quality report compares real and synthetic channel covariance, lag-1
+autocorrelation, and theta/alpha/beta/gamma band power. These checks can expose
+obvious mismatch but do not prove physiological validity; downstream held-out
+classification and multiple seeds are still required.
+
+The per-fold paper comparison saves a GAN, both classifier checkpoints, GAN
+history, balanced two-class quality diagnostics, full fold manifest, window-
+level metrics, subject-condition metrics, subject-clustered bootstrap intervals,
+and exact paired sign-flip tests. Run predeclared augmentation fractions such as
+`0.10`, `0.25`, `0.50`, and `1.00`; do not choose the best fraction using final
+held-out results.
+
+For multiple-seed reporting, repeat the command with predeclared seeds such as
+`42`, `43`, and `44`, then report all seeds rather than selecting the best run.
+
 ## DREAMER Commands
 
 Check that DREAMER raw data loads:
@@ -302,7 +391,7 @@ python3 -m src.data_loader
 Check processed labels and class balance:
 
 ```bash
-python3 -m src.labeling
+python3 -m src.labeling --dataset dreamer
 ```
 
 Audit the folder/artifact setup:
@@ -332,25 +421,25 @@ python3 -m src.train_gan --dataset dreamer --run_name gan_400epoch --epochs 400 
 Train one classifier without GAN:
 
 ```bash
-python3 -m src.train_baseline_single --dataset dreamer --model eegnet --epochs 30
+python3 -m src.train_baseline_single --dataset dreamer --model eegnet_adapted --epochs 30
 ```
 
 Train one classifier with saved GAN data:
 
 ```bash
-python3 -m src.train_baseline_single --dataset dreamer --model eegnet --use_gan --gan_run gan_400epoch --epochs 30
+python3 -m src.train_baseline_single --dataset dreamer --model eegnet_adapted --use_gan --gan_run gan_400epoch --epochs 30
 ```
 
 Run cross-validation baselines:
 
 ```bash
-python3 -m src.train_baseline --dataset dreamer --model eegnet --epochs 30 --folds 5
+python3 -m src.train_baseline --dataset dreamer --model eegnet_adapted --epochs 30 --folds 5
 ```
 
 Run the stricter per-fold GAN comparison for research reporting:
 
 ```bash
-python3 -m src.compare_gan_augmentation --dataset dreamer --model eegnet --gan_epochs 200 --clf_epochs 30 --folds 5
+python3 -m src.compare_gan_augmentation --dataset dreamer --model eegnet_adapted --gan_epochs 200 --clf_epochs 30 --folds 5 --synth_fraction 0.25
 ```
 
 ## Recommended Experiment Naming
@@ -361,10 +450,10 @@ Good examples:
 
 ```text
 gan_400epoch
-gan_400epoch_seed42_balanced
+gan_400epoch_seed42_frac25
 gan_200epoch_backup
-eegnet_30epoch_without_gan
-eegnet_30epoch_with_gan_400epoch
+eegnet_adapted_30epoch_without_gan
+eegnet_adapted_30epoch_with_gan_400epoch
 ```
 
 Avoid vague names like:
@@ -403,8 +492,78 @@ Source: https://zenodo.org/records/546113
 
 STEW:
 
-Planned. 14-channel Emotiv EPOC workload/stress dataset with direct workload
-ratings. Loader not implemented yet.
+Raw files are present locally under:
+
+```text
+data/raw/stew/stew_dataset/
+```
+
+Source: IEEE DataPort, "STEW: Simultaneous Task EEG Workload Dataset",
+DOI `10.21227/44r8-ya50`.
+
+Dataset facts from the IEEE DataPort page:
+
+```text
+subjects: 48
+device: Emotiv EPOC
+sampling rate: 128 Hz
+channels: 14
+recording duration: 2.5 minutes per condition
+conditions:
+  lo = rest / low workload
+  hi = SIMKAP multitasking test / high workload
+file naming:
+  sub01_lo.txt = subject 1 at rest
+  sub01_hi.txt = subject 1 during multitasking test
+columns:
+  AF3, F7, F3, FC5, T7, P7, O1, O2, P8, T8, FC6, F4, F8, AF4
+ratings:
+  ratings.txt has subject number, rest rating, test rating
+missing ratings:
+  subjects 5, 24, and 42
+```
+
+Local file check:
+
+```text
+data/raw/stew/stew_dataset/ratings.txt
+data/raw/stew/stew_dataset/sub01_lo.txt ... sub48_lo.txt
+data/raw/stew/stew_dataset/sub01_hi.txt ... sub48_hi.txt
+```
+
+There are 96 subject-condition EEG files locally: 48 `_lo` files and 48 `_hi`
+files.
+
+Current STEW implementation:
+
+```text
+raw loader: implemented
+preprocessing: 0.5-45 Hz filtering, 4 s windows with 50% overlap,
+  training-subject-calibrated MAD artifact rejection at multiplier 60,
+  per-window/channel z-score
+labeling: implemented as condition labels, lo=0 and hi=1
+split: implemented via subject-independent split
+CWGAN-GP: strict inner-training isolation, seeded runs, protocol metadata,
+  manifests, loss history, and quantitative quality report implemented
+```
+
+Legacy smoke-test artifacts (created before strict metadata; do not use for results):
+
+```text
+data/processed/stew/synthetic_train_smoke.npz
+models/stew/smoke/cwgan_gp_generator.pt
+models/stew/smoke/cwgan_gp_critic.pt
+outputs/stew/smoke/gan_training_loss.png
+outputs/stew/smoke/gan_waveform_check.png
+outputs/stew/smoke/gan_tsne_check.png
+```
+
+For publication-quality STEW GAN results, use a named seed and repeat the full
+experiment across multiple seeds, for example:
+
+```bash
+python3 -m src.train_gan --dataset stew --run_name gan_400epoch_seed42_frac25 --epochs 400 --batch_size 64 --seed 42 --augmentation_fraction 0.25
+```
 
 IUB:
 
@@ -416,14 +575,14 @@ DASPS:
 Planned. 14-channel Emotiv EPOC+ anxiety dataset using HAM-A labels. Loader not
 implemented yet.
 
-Important research limitation: DREAMER, STEW, IUB, and DASPS may not all measure
-the exact same construct. DREAMER uses emotion-based stress proxy labels, STEW is
-closer to workload/stress, and DASPS is anxiety-labeled. This must be stated in
+Important research limitation: DREAMER, STEW, IUB, and DASPS do not measure
+the exact same construct. DREAMER uses emotion-based stress proxy labels, STEW
+uses experimentally defined workload conditions, and DASPS is anxiety-labeled. This must be stated in
 the paper instead of treated as identical ground truth.
 
 ## Adding A New Dataset
 
-For STEW, IUB, or DASPS, add a dataset-specific raw loader and convert data into
+For IUB or DASPS, first add a `DatasetSpec` and dataset-specific raw loader, then convert data into
 the same standardized processed format used by DREAMER.
 
 Target processed format:

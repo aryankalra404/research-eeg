@@ -1,14 +1,14 @@
 """
 Conditional WGAN-GP for raw EEG window generation, shape (T=512, C=14),
-conditioned on the binary stress label.
+conditioned on a binary dataset label (STEW: low/high workload).
 
 Design (see conversation for rationale):
     - Generator: noise + label embedding -> transposed 1D convs, upsample
       32 -> 64 -> 128 -> 256 -> 512 timepoints, channels down to 14.
     - Critic: mirror -- strided 1D convs downsample 512 -> 32, label embedding
       concatenated as extra channels at the input. No batchnorm in critic
-      (breaks the Lipschitz assumption needed for the gradient penalty) --
-      uses InstanceNorm instead.
+      (breaks per-sample independence for the gradient penalty); GroupNorm
+      with one group provides per-sample layer-style normalization.
     - Conditioning: label embedded to a vector, broadcast across time,
       concatenated as extra channel(s).
 
@@ -26,10 +26,9 @@ LABEL_EMBED_DIM = 8  # small embedding for binary label, broadcast across time
 
 def weights_init(m):
     """
-    DCGAN-style initialization, carried through in the official WGAN-GP paper
-    (Gulrajani et al. 2017) and virtually all reference implementations.
-    GANs are known to be sensitive to init; PyTorch's default init is not
-    what the literature actually uses here.
+    Explicit DCGAN-style initialization used as a documented architectural
+    choice for this EEG adaptation. It is not claimed as part of the original
+    WGAN-GP algorithm.
     """
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:

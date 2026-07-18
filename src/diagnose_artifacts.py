@@ -1,38 +1,82 @@
-"""
-Run this BEFORE re-running the full preprocessing pipeline, to check what
-rejection rate different MAD multipliers actually produce on your real data.
-Avoids guessing a threshold and discovering it's wrong after a full run.
+"""Compare artifact-rejection thresholds on raw DREAMER or STEW windows."""
 
-Usage:
-    python -m src.diagnose_artifacts
-"""
+import argparse
+
+import numpy as np
 
 from . import config
-from .data_loader import load_dreamer_mat
-from .preprocessing import filter_signal, baseline_correct, sliding_window_epochs, diagnose_rejection_thresholds
-import numpy as np
+from .data_loader import load_dreamer_mat, load_stew
+from .preprocessing import (
+    baseline_correct,
+    filter_signal,
+    reject_artifact_windows,
+    sliding_window_epochs,
+)
+
+
+def dreamer_windows(max_subjects: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    subjects = load_dreamer_mat()
+    if max_subjects:
+        subjects = subjects[:max_subjects]
+    windows, subject_ids = [], []
+    for subject in subjects:
+        for trial_i in range(config.N_VIDEOS):
+            baseline = filter_signal(subject.eeg_baseline[trial_i])
+            stimuli = filter_signal(subject.eeg_stimuli[trial_i])
+            signal = baseline_correct(stimuli, baseline) if config.APPLY_BASELINE_CORRECTION else stimuli
+            trial_windows = sliding_window_epochs(signal)
+            windows.append(trial_windows)
+            subject_ids.append(np.full(len(trial_windows), subject.subject_id, dtype=np.int64))
+    combined = np.concatenate(windows)
+    return combined, np.zeros(len(combined), dtype=np.int64), np.concatenate(subject_ids)
+
+
+def stew_windows(max_subjects: int | None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    subjects = load_stew()
+    if max_subjects:
+        subjects = subjects[:max_subjects]
+    windows, labels, subject_ids = [], [], []
+    for subject in subjects:
+        for raw, label in ((subject.eeg_lo, 0), (subject.eeg_hi, 1)):
+            condition_windows = sliding_window_epochs(filter_signal(raw))
+            windows.append(condition_windows)
+            labels.append(np.full(len(condition_windows), label, dtype=np.int64))
+            subject_ids.append(
+                np.full(len(condition_windows), subject.subject_id, dtype=np.int64)
+            )
+    return np.concatenate(windows), np.concatenate(labels), np.concatenate(subject_ids)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", choices=("dreamer", "stew"), default=config.DEFAULT_DATASET)
+    parser.add_argument("--max_subjects", type=int, default=None)
+    parser.add_argument("--multipliers", type=float, nargs="+", default=[20, 30, 40, 50, 60, 80])
+    args = parser.parse_args()
+
+    windows, labels, subject_ids = (
+        stew_windows(args.max_subjects)
+        if args.dataset == "stew"
+        else dreamer_windows(args.max_subjects)
+    )
+    print(f"Dataset={args.dataset}, candidate windows={len(windows)}")
+    for multiplier in args.multipliers:
+        keep = np.ones(len(windows), dtype=bool)
+        for subject_id in np.unique(subject_ids):
+            subject_mask = subject_ids == subject_id
+            keep[subject_mask] = reject_artifact_windows(
+                windows[subject_mask], mad_multiplier=multiplier
+            )
+        line = f"MAD={multiplier:5.1f}: rejected={100 * (~keep).mean():5.2f}%"
+        if args.dataset == "stew":
+            lo_rate = 100 * (~keep[labels == 0]).mean()
+            hi_rate = 100 * (~keep[labels == 1]).mean()
+            line += f" (lo={lo_rate:5.2f}%, hi={hi_rate:5.2f}%)"
+        print(line)
+
+    configured = config.artifact_rejection_mad_multiplier(args.dataset)
+    print(f"Configured multiplier for {args.dataset}: {configured}")
 
 
 if __name__ == "__main__":
-    subjects = load_dreamer_mat()
-
-    # Check a handful of subjects (not all 23, this is just a threshold-picking tool)
-    check_subjects = subjects[:5]
-
-    all_windows = []
-    for subject in check_subjects:
-        for trial_i in range(config.N_VIDEOS):
-            baseline_filt = filter_signal(subject.eeg_baseline[trial_i])
-            stimuli_filt = filter_signal(subject.eeg_stimuli[trial_i])
-            corrected = baseline_correct(stimuli_filt, baseline_filt) if config.APPLY_BASELINE_CORRECTION else stimuli_filt
-            windows = sliding_window_epochs(corrected)
-            if windows.shape[0] > 0:
-                all_windows.append(windows)
-
-    windows_concat = np.concatenate(all_windows, axis=0)
-    print(f"Checking thresholds on {len(check_subjects)} subjects, {windows_concat.shape[0]} total windows\n")
-    diagnose_rejection_thresholds(windows_concat)
-
-    print(f"\nCurrent config.ARTIFACT_REJECTION_MAD_MULTIPLIER = {config.ARTIFACT_REJECTION_MAD_MULTIPLIER}")
-    print("Pick a multiplier that rejects roughly 2-10% of windows (typical for amplitude-")
-    print("based EEG rejection), then update config.py before re-running the full pipeline.")
+    main()

@@ -1,8 +1,13 @@
 """
-Converts DREAMER's arousal/valence self-report scores into a binary stress
-proxy label, using the circumplex quadrant model:
+Converts processed subject files into binary labels.
+
+DREAMER uses arousal/valence self-report scores as a binary stress proxy:
     high arousal + low valence  ->  stress = 1
     everything else             ->  stress = 0
+
+STEW currently stores direct window labels during preprocessing:
+    lo/rest = 0
+    hi/multitasking = 1
 
 Threshold method is controlled by config.LABEL_THRESHOLD_METHOD:
     'median_split' -> per-subject median of that subject's 18 arousal/valence
@@ -15,7 +20,7 @@ IMPORTANT: this label is a PROXY for stress, not a validated stress measure.
 State this explicitly in the paper -- see README.md limitations section.
 
 Usage:
-    python -m src.labeling   # prints label distribution sanity check
+    python -m src.labeling --dataset stew
 """
 
 import numpy as np
@@ -29,6 +34,11 @@ def compute_trial_labels(subject: ProcessedSubject) -> np.ndarray:
     Returns an (18,) binary array: 1 = stress-proxy, 0 = non-stress, for
     each of the subject's 18 trials.
     """
+    if subject.arousal is None or subject.valence is None:
+        raise ValueError(
+            f"Subject {subject.subject_id} does not have DREAMER arousal/valence fields. "
+            f"Use direct labels for this dataset."
+        )
     arousal = subject.arousal
     valence = subject.valence
 
@@ -52,6 +62,9 @@ def label_windows(subject: ProcessedSubject) -> np.ndarray:
     Broadcasts trial-level labels to every window belonging to that trial.
     Returns (N,) array matching subject.windows.shape[0].
     """
+    if subject.labels is not None:
+        return subject.labels.astype(np.int64)
+
     trial_labels = compute_trial_labels(subject)  # (18,)
     window_labels = trial_labels[subject.trial_idx]  # (N,) via fancy indexing
     return window_labels
@@ -80,19 +93,20 @@ def build_dataset(processed: list[ProcessedSubject]):
     return X, y, groups
 
 
-def summarize_labels(processed: list[ProcessedSubject]) -> None:
+def summarize_labels(processed: list[ProcessedSubject], dataset: str = config.DEFAULT_DATASET) -> None:
     X, y, groups = build_dataset(processed)
 
     n_total = len(y)
-    n_stress = int(y.sum())
-    n_nonstress = n_total - n_stress
+    n_class1 = int(y.sum())
+    n_class0 = n_total - n_class1
+    class0_name, class1_name = config.class_names(dataset)
 
     print(f"Total windows: {n_total}")
-    print(f"  stress=1:     {n_stress}  ({100*n_stress/n_total:.1f}%)")
-    print(f"  non-stress=0: {n_nonstress}  ({100*n_nonstress/n_total:.1f}%)")
+    print(f"  class 1 ({class1_name}): {n_class1}  ({100*n_class1/n_total:.1f}%)")
+    print(f"  class 0 ({class0_name}): {n_class0}  ({100*n_class0/n_total:.1f}%)")
     print(f"X shape: {X.shape}   (windows, T, C)")
 
-    print("\nPer-subject stress-window fraction (check for subjects that are all one class):")
+    print("\nPer-subject class-1 fraction (check for subjects that are all one class):")
     for subj_id in sorted(set(groups)):
         mask = groups == subj_id
         frac = y[mask].mean()
@@ -101,5 +115,11 @@ def summarize_labels(processed: list[ProcessedSubject]) -> None:
 
 
 if __name__ == "__main__":
-    processed = load_processed(dataset=config.DEFAULT_DATASET)
-    summarize_labels(processed)
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
+    args = parser.parse_args()
+
+    processed = load_processed(dataset=args.dataset)
+    summarize_labels(processed, dataset=args.dataset)

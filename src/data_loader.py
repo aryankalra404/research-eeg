@@ -1,5 +1,5 @@
 """
-Loads DREAMER.mat and converts it into a clean, subject-indexed Python structure.
+Loads raw EEG datasets into clean, subject-indexed Python structures.
 
 DREAMER.mat structure (from the official readme):
     DREAMER.Data{i}                -> per-subject struct
@@ -15,7 +15,7 @@ Usage:
     python -m src.data_loader   # sanity-check load + print summary
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +33,15 @@ class SubjectData:
     valence: np.ndarray  # (18,)
     arousal: np.ndarray  # (18,)
     dominance: np.ndarray  # (18,)
+
+
+@dataclass
+class STEWSubjectData:
+    subject_id: int
+    eeg_lo: np.ndarray  # rest / low workload, shape (M, 14)
+    eeg_hi: np.ndarray  # SIMKAP multitasking / high workload, shape (M, 14)
+    rating_lo: float | None
+    rating_hi: float | None
 
 
 def load_dreamer_mat(path: Path | None = None) -> list[SubjectData]:
@@ -81,6 +90,83 @@ def load_dreamer_mat(path: Path | None = None) -> list[SubjectData]:
         f"Expected {config.N_SUBJECTS} subjects, got {len(subjects)}. "
         f"Check DREAMER.mat integrity."
     )
+    return subjects
+
+
+def load_stew(raw_dir: Path | None = None) -> list[STEWSubjectData]:
+    """
+    Loads STEW raw text files.
+
+    STEW file convention:
+        sub01_lo.txt -> subject 1 at rest / low workload
+        sub01_hi.txt -> subject 1 during SIMKAP multitasking / high workload
+        ratings.txt  -> subject_id, rest rating, test rating
+
+    Rows are samples and columns are the 14 Emotiv EPOC channels in
+    config.EEG_CHANNELS order.
+    """
+    raw_dir = raw_dir or config.STEW_RAW_DIR
+    if not raw_dir.exists():
+        raise FileNotFoundError(
+            f"STEW raw directory not found at {raw_dir}. "
+            f"Expected files like sub01_lo.txt, sub01_hi.txt, and ratings.txt."
+        )
+
+    ratings_path = raw_dir / "ratings.txt"
+    ratings: dict[int, tuple[float, float]] = {}
+    if ratings_path.exists():
+        ratings_arr = np.loadtxt(ratings_path, delimiter=",", dtype=float)
+        ratings_arr = np.atleast_2d(ratings_arr)
+        for row in ratings_arr:
+            subj_id = int(row[0])
+            ratings[subj_id] = (float(row[1]), float(row[2]))
+        expected_rating_subjects = set(range(1, config.STEW_N_SUBJECTS + 1)) - set(
+            config.STEW_MISSING_RATING_SUBJECTS
+        )
+        if set(ratings) != expected_rating_subjects:
+            raise ValueError(
+                "STEW ratings.txt subject IDs do not match the documented set. "
+                f"Missing={sorted(expected_rating_subjects - set(ratings))}, "
+                f"unexpected={sorted(set(ratings) - expected_rating_subjects)}."
+            )
+
+    subjects = []
+    for subj_id in range(1, config.STEW_N_SUBJECTS + 1):
+        lo_path = raw_dir / f"sub{subj_id:02d}_lo.txt"
+        hi_path = raw_dir / f"sub{subj_id:02d}_hi.txt"
+        if not lo_path.exists() or not hi_path.exists():
+            raise FileNotFoundError(
+                f"Missing STEW file(s) for subject {subj_id}: "
+                f"{lo_path.name} exists={lo_path.exists()}, {hi_path.name} exists={hi_path.exists()}"
+            )
+
+        eeg_lo = np.loadtxt(lo_path, dtype=np.float32)
+        eeg_hi = np.loadtxt(hi_path, dtype=np.float32)
+        if eeg_lo.ndim != 2 or eeg_hi.ndim != 2:
+            raise ValueError(f"STEW subject {subj_id} files must be 2D sample x channel arrays.")
+        if eeg_lo.shape[1] != config.N_CHANNELS or eeg_hi.shape[1] != config.N_CHANNELS:
+            raise ValueError(
+                f"STEW subject {subj_id} expected {config.N_CHANNELS} channels, "
+                f"got lo={eeg_lo.shape}, hi={eeg_hi.shape}."
+            )
+        expected_shape = (config.STEW_SAMPLES_PER_CONDITION, config.N_CHANNELS)
+        if eeg_lo.shape != expected_shape or eeg_hi.shape != expected_shape:
+            raise ValueError(
+                f"STEW subject {subj_id} expected each condition to have shape "
+                f"{expected_shape}, got lo={eeg_lo.shape}, hi={eeg_hi.shape}."
+            )
+
+        rating_lo, rating_hi = ratings.get(subj_id, (None, None))
+        subjects.append(
+            STEWSubjectData(
+                subject_id=subj_id,
+                eeg_lo=eeg_lo,
+                eeg_hi=eeg_hi,
+                rating_lo=rating_lo,
+                rating_hi=rating_hi,
+            )
+        )
+
     return subjects
 
 

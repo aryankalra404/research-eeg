@@ -1,5 +1,5 @@
 """
-Six baseline architectures for binary stress classification, sharing one
+Six baseline architectures for binary EEG classification, sharing one
 interface: forward(x) where x is (batch, T, C) float32, T=window_samples,
 C=n_channels. All output raw logits of shape (batch, 2).
 
@@ -9,14 +9,14 @@ Internally each model reshapes/permutes x as needed for its own convention
 Models:
     1D-CNN          -- simple stacked Conv1d over time, channels as input depth
     VanillaLSTM     -- LSTM over time, channels as per-timestep features
-    EEGNet          -- Lawhern et al. 2018, compact depthwise/separable CNN
-    DeepConvNet      -- Schirrmeister et al. 2017
-    ShallowConvNet   -- Schirrmeister et al. 2017
+    EEGNetAdapted        -- EEGNet-inspired compact depthwise/separable CNN
+    DeepConvNetAdapted   -- adapted Schirrmeister et al. deep architecture
+    ShallowConvNetAdapted -- adapted Schirrmeister et al. shallow architecture
     TemporalCNN      -- dilated causal-conv TCN-style network
 
 Usage:
     from src.models import get_model
-    model = get_model("eegnet", n_channels=14, n_timepoints=512, n_classes=2)
+    model = get_model("eegnet_adapted", n_channels=14, n_timepoints=512, n_classes=2)
 """
 
 import torch
@@ -79,7 +79,8 @@ class VanillaLSTM(nn.Module):
 # ---------------------------------------------------------------------------
 # 3. EEGNet (Lawhern et al. 2018)
 # ---------------------------------------------------------------------------
-class EEGNet(nn.Module):
+class EEGNetAdapted(nn.Module):
+    """EEGNet-inspired adaptation for 4-second, 14-channel STEW windows."""
     def __init__(self, n_channels: int, n_timepoints: int, n_classes: int = 2,
                  F1: int = 8, D: int = 2, F2: int = 16, kernel_length: int = 64,
                  dropout: float = 0.5):
@@ -132,7 +133,8 @@ class EEGNet(nn.Module):
 # ---------------------------------------------------------------------------
 # 4. DeepConvNet (Schirrmeister et al. 2017)
 # ---------------------------------------------------------------------------
-class DeepConvNet(nn.Module):
+class DeepConvNetAdapted(nn.Module):
+    """DeepConvNet adaptation; not an exact reproduction of the paper model."""
     def __init__(self, n_channels: int, n_timepoints: int, n_classes: int = 2,
                  dropout: float = 0.5):
         super().__init__()
@@ -184,7 +186,8 @@ class DeepConvNet(nn.Module):
 # ---------------------------------------------------------------------------
 # 5. ShallowConvNet (Schirrmeister et al. 2017)
 # ---------------------------------------------------------------------------
-class ShallowConvNet(nn.Module):
+class ShallowConvNetAdapted(nn.Module):
+    """ShallowConvNet adaptation for the repository's fixed window format."""
     def __init__(self, n_channels: int, n_timepoints: int, n_classes: int = 2,
                  dropout: float = 0.5):
         super().__init__()
@@ -277,17 +280,25 @@ class TemporalCNN(nn.Module):
 MODEL_REGISTRY = {
     "1dcnn": OneDCNN,
     "lstm": VanillaLSTM,
-    "eegnet": EEGNet,
-    "deepconvnet": DeepConvNet,
-    "shallowconvnet": ShallowConvNet,
+    "eegnet_adapted": EEGNetAdapted,
+    "deepconvnet_adapted": DeepConvNetAdapted,
+    "shallowconvnet_adapted": ShallowConvNetAdapted,
     "temporalcnn": TemporalCNN,
+}
+
+MODEL_ALIASES = {
+    "eegnet": "eegnet_adapted",
+    "deepconvnet": "deepconvnet_adapted",
+    "shallowconvnet": "shallowconvnet_adapted",
 }
 
 
 def get_model(name: str, n_channels: int, n_timepoints: int, n_classes: int = 2, **kwargs):
     name = name.lower()
+    name = MODEL_ALIASES.get(name, name)
     if name not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model '{name}'. Available: {list(MODEL_REGISTRY.keys())}")
+        available = list(MODEL_REGISTRY) + list(MODEL_ALIASES)
+        raise ValueError(f"Unknown model '{name}'. Available: {available}")
     return MODEL_REGISTRY[name](n_channels=n_channels, n_timepoints=n_timepoints,
                                   n_classes=n_classes, **kwargs)
 

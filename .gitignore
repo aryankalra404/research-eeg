@@ -29,8 +29,9 @@ outputs/**/*.json
 !outputs/.gitkeep
 !outputs/*/
 !outputs/*/.gitkeep
-runs/**/*.json
+# Manifests and metric histories are small and intentionally shareable.
 runs/**/*.log
+runs/**/protocol_smoke*/
 !runs/.gitkeep
 !runs/*/
 !runs/*/.gitkeep

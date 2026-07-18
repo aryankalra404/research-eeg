@@ -4,7 +4,7 @@ so every script (GAN training, baseline training, augmented training) uses
 the exact same split -- required for a fair with-GAN vs without-GAN comparison.
 
 Usage:
-    python -m src.split --dataset dreamer
+    python -m src.split --dataset stew
 """
 
 import argparse
@@ -19,6 +19,24 @@ from .preprocessing import load_processed
 
 
 TEST_FRACTION = 0.2  # ~20% of subjects held out as the fixed test set
+INNER_VAL_FRACTION = 0.15
+
+
+def inner_group_split_indices(
+    groups: np.ndarray,
+    inner_val_fraction: float = INNER_VAL_FRACTION,
+    seed: int = config.RANDOM_SEED,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Return subject-disjoint inner-train/inner-validation indices."""
+    n_unique_groups = len(np.unique(groups))
+    if n_unique_groups < 3:
+        return np.arange(len(groups)), None
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=inner_val_fraction,
+        random_state=seed,
+    )
+    return next(splitter.split(np.zeros(len(groups)), groups=groups))
 
 
 def create_split(dataset: str = config.DEFAULT_DATASET):
@@ -86,7 +104,10 @@ def apply_split_with_groups(X, y, groups, split_info):
     train_mask = np.isin(groups, list(train_subjects))
     test_mask = np.isin(groups, list(test_subjects))
 
-    return X[train_mask], y[train_mask], groups[train_mask], X[test_mask], y[test_mask]
+    return (
+        X[train_mask], y[train_mask], groups[train_mask],
+        X[test_mask], y[test_mask], groups[test_mask],
+    )
 
 
 if __name__ == "__main__":

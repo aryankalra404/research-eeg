@@ -35,34 +35,39 @@ def main() -> int:
     print(f"Dataset setup audit: {dataset}")
     print(f"Project root: {PROJECT_ROOT}\n")
 
-    raw_files = [p for p in raw_dir.glob("*") if p.name != ".gitkeep"]
+    raw_files = [p for p in raw_dir.glob("**/*") if p.is_file() and p.name != ".gitkeep"]
     processed_files = sorted(processed_dir.glob("subject_*.npz"))
     legacy_processed_files = sorted(config.DATA_PROCESSED.glob("subject_*.npz")) if dataset == "dreamer" else []
     split_file = processed_dir / "split.json"
     legacy_split_file = config.DATA_PROCESSED / "split.json"
+    split_exists = split_file.exists() or (dataset == "dreamer" and legacy_split_file.exists())
+    split_detail = split_file if split_file.exists() else (
+        legacy_split_file if dataset == "dreamer" and legacy_split_file.exists() else split_file
+    )
     synth_files = sorted(processed_dir.glob("synthetic_train*.npz"))
     legacy_synth_files = sorted(config.DATA_PROCESSED.glob("synthetic_train*.npz")) if dataset == "dreamer" else []
     checkpoint_files = sorted(model_dir.glob("**/*.pt"))
     output_files = [p for p in output_dir.glob("**/*") if p.is_file() and p.name != ".gitkeep"]
+    manifest_files = sorted(run_dir.glob("**/manifest.json"))
 
     status("raw directory", raw_dir.exists(), str(raw_dir))
     status("raw files", bool(raw_files), f"{len(raw_files)} file(s)")
     status("processed subjects", bool(processed_files or legacy_processed_files),
            f"{len(processed_files)} dataset-folder file(s), {len(legacy_processed_files)} legacy file(s)")
-    status("split", split_file.exists() or (dataset == "dreamer" and legacy_split_file.exists()),
-           str(split_file if split_file.exists() else legacy_split_file))
+    status("split", split_exists, str(split_detail))
     status("synthetic GAN data", bool(synth_files or legacy_synth_files),
            f"{len(synth_files)} dataset-folder file(s), {len(legacy_synth_files)} legacy file(s)")
     status("model checkpoints", bool(checkpoint_files), f"{len(checkpoint_files)} .pt file(s) under {model_dir}")
     status("outputs", bool(output_files), f"{len(output_files)} file(s) under {output_dir}")
     status("runs directory", run_dir.exists(), str(run_dir))
+    status("run manifests", bool(manifest_files), f"{len(manifest_files)} manifest(s) under {run_dir}")
 
     print("\nRecommended commands:")
     print(f"  python -m src.preprocessing --dataset {dataset}")
     print(f"  python -m src.split --dataset {dataset}")
-    print(f"  python -m src.train_gan --dataset {dataset} --run_name gan_400epoch --epochs 400")
-    print(f"  python -m src.train_baseline_single --dataset {dataset} --model eegnet --epochs 30")
-    print(f"  python -m src.train_baseline_single --dataset {dataset} --model eegnet --use_gan --gan_run gan_400epoch --epochs 30")
+    print(f"  python -m src.train_gan --dataset {dataset} --run_name gan_400epoch_seed42_frac25 --epochs 400 --seed 42 --augmentation_fraction 0.25")
+    print(f"  python -m src.train_baseline_single --dataset {dataset} --model eegnet_adapted --epochs 30 --seed 42")
+    print(f"  python -m src.compare_gan_augmentation --dataset {dataset} --model eegnet_adapted --gan_epochs 200 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25")
 
     return 0
 

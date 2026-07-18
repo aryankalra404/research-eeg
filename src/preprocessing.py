@@ -2,13 +2,18 @@
 Phase 1 preprocessing: bandpass/notch filtering -> baseline correction ->
 sliding-window epoching -> per-subject z-score normalization.
 
-Design notes (based on actual DREAMER shapes confirmed via data_loader.py):
+Design notes:
+  - DREAMER:
   - Baseline clips are a fixed 7808 samples (61s) every trial.
   - Stimuli clips vary 8576-50432 samples (67s-394s) -> variable window counts
     per trial, handled naturally by sliding-window epoching per clip.
+  - STEW:
+    - Each subject has one rest/low workload recording and one high workload
+      multitasking recording, both sampled at 128Hz with 14 channels.
+    - Labels are condition-based for now: lo=0, hi=1.
 
 Usage:
-    python -m src.preprocessing --dataset dreamer
+    python -m src.preprocessing --dataset stew
 """
 
 import argparse
@@ -18,7 +23,7 @@ import numpy as np
 from scipy.signal import butter, filtfilt, iirnotch
 
 from . import config
-from .data_loader import SubjectData, load_dreamer_mat
+from .data_loader import STEWSubjectData, SubjectData, load_dreamer_mat, load_stew
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +168,13 @@ def zscore_normalize(windows: np.ndarray) -> np.ndarray:
     return (windows - mean) / std
 
 
+def zscore_normalize_per_window(windows: np.ndarray) -> np.ndarray:
+    """Normalize each window/channel independently without cross-window state."""
+    mean = windows.mean(axis=1, keepdims=True)
+    std = windows.std(axis=1, keepdims=True) + 1e-8
+    return (windows - mean) / std
+
+
 # ---------------------------------------------------------------------------
 # Full per-subject pipeline
 # ---------------------------------------------------------------------------
@@ -171,9 +183,12 @@ class ProcessedSubject:
     subject_id: int
     windows: np.ndarray  # (N, T, C) float32 -- all windows across all 18 trials
     trial_idx: np.ndarray  # (N,) which of the 18 trials each window came from (0-17)
-    valence: np.ndarray  # (18,) raw scores, indexed by trial_idx to label windows later
-    arousal: np.ndarray  # (18,)
-    dominance: np.ndarray  # (18,)
+    valence: np.ndarray | None = None  # DREAMER (18,) raw scores
+    arousal: np.ndarray | None = None
+    dominance: np.ndarray | None = None
+    labels: np.ndarray | None = None  # Optional direct window labels, e.g. STEW lo/hi
+    rating_lo: float | None = None
+    rating_hi: float | None = None
 
 
 def process_subject(subject: SubjectData) -> ProcessedSubject:
@@ -210,7 +225,10 @@ def process_subject(subject: SubjectData) -> ProcessedSubject:
 
     n_before = windows_concat.shape[0]
     if config.APPLY_ARTIFACT_REJECTION:
-        keep_mask = reject_artifact_windows(windows_concat)
+        keep_mask = reject_artifact_windows(
+            windows_concat,
+            mad_multiplier=config.artifact_rejection_mad_multiplier("dreamer"),
+        )
         windows_concat = windows_concat[keep_mask]
         trial_idx_concat = trial_idx_concat[keep_mask]
         n_after = windows_concat.shape[0]
@@ -233,11 +251,79 @@ def process_subject(subject: SubjectData) -> ProcessedSubject:
     )
 
 
+def process_stew_subject(subject: STEWSubjectData) -> ProcessedSubject:
+    condition_windows = []
+    condition_trial_idx = []
+    condition_labels = []
+
+    for trial_i, (condition_name, raw, label) in enumerate(
+        [("lo", subject.eeg_lo, 0), ("hi", subject.eeg_hi, 1)]
+    ):
+        filtered = filter_signal(raw, fs=config.EEG_SAMPLING_RATE)
+        windows = sliding_window_epochs(filtered)
+        if windows.shape[0] == 0:
+            print(
+                f"  [warn] STEW subject {subject.subject_id} {condition_name}: "
+                f"recording too short ({filtered.shape[0]} samples) for "
+                f"window size {config.WINDOW_SAMPLES} -- skipped."
+            )
+            continue
+
+        condition_windows.append(windows)
+        condition_trial_idx.append(np.full(windows.shape[0], trial_i, dtype=np.int32))
+        condition_labels.append(np.full(windows.shape[0], label, dtype=np.int64))
+
+    if not condition_windows:
+        raise ValueError(f"STEW subject {subject.subject_id} produced no windows.")
+
+    windows_concat = np.concatenate(condition_windows, axis=0)
+    trial_idx_concat = np.concatenate(condition_trial_idx, axis=0)
+    labels_concat = np.concatenate(condition_labels, axis=0)
+
+    n_before = windows_concat.shape[0]
+    if config.APPLY_ARTIFACT_REJECTION:
+        keep_mask = reject_artifact_windows(
+            windows_concat,
+            mad_multiplier=config.artifact_rejection_mad_multiplier("stew"),
+        )
+        windows_concat = windows_concat[keep_mask]
+        trial_idx_concat = trial_idx_concat[keep_mask]
+        labels_concat = labels_concat[keep_mask]
+        n_after = windows_concat.shape[0]
+        n_rejected = n_before - n_after
+        print(f"  STEW subject {subject.subject_id}: rejected {n_rejected}/{n_before} "
+              f"windows ({100*n_rejected/n_before:.1f}%) for amplitude artifacts")
+        if n_after < config.ARTIFACT_REJECTION_MIN_WINDOWS_WARN:
+            print(f"  [warn] STEW subject {subject.subject_id} has only {n_after} windows "
+                  f"remaining after artifact rejection -- check this subject's data quality.")
+
+    if config.STEW_NORMALIZATION != "per_window_channel_zscore":
+        raise ValueError(f"Unsupported STEW normalization: {config.STEW_NORMALIZATION}")
+    windows_norm = zscore_normalize_per_window(windows_concat)
+
+    return ProcessedSubject(
+        subject_id=subject.subject_id,
+        windows=windows_norm.astype(np.float32),
+        trial_idx=trial_idx_concat,
+        labels=labels_concat,
+        rating_lo=subject.rating_lo,
+        rating_hi=subject.rating_hi,
+    )
+
+
 def process_all_subjects(subjects: list[SubjectData]) -> list[ProcessedSubject]:
     processed = []
     for s in subjects:
         print(f"Processing subject {s.subject_id}/{config.N_SUBJECTS}...")
         processed.append(process_subject(s))
+    return processed
+
+
+def process_all_stew_subjects(subjects: list[STEWSubjectData]) -> list[ProcessedSubject]:
+    processed = []
+    for s in subjects:
+        print(f"Processing STEW subject {s.subject_id}/{config.STEW_N_SUBJECTS}...")
+        processed.append(process_stew_subject(s))
     return processed
 
 
@@ -248,14 +334,23 @@ def save_processed(processed: list[ProcessedSubject], out_dir=None) -> None:
     out_dir = out_dir or config.processed_dir("dreamer")
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in processed:
-        np.savez_compressed(
-            out_dir / f"subject_{p.subject_id:02d}.npz",
-            windows=p.windows,
-            trial_idx=p.trial_idx,
-            valence=p.valence,
-            arousal=p.arousal,
-            dominance=p.dominance,
-        )
+        payload = {
+            "windows": p.windows,
+            "trial_idx": p.trial_idx,
+        }
+        if p.valence is not None:
+            payload["valence"] = p.valence
+        if p.arousal is not None:
+            payload["arousal"] = p.arousal
+        if p.dominance is not None:
+            payload["dominance"] = p.dominance
+        if p.labels is not None:
+            payload["labels"] = p.labels
+        if p.rating_lo is not None:
+            payload["rating_lo"] = np.array(p.rating_lo, dtype=np.float32)
+        if p.rating_hi is not None:
+            payload["rating_hi"] = np.array(p.rating_hi, dtype=np.float32)
+        np.savez_compressed(out_dir / f"subject_{p.subject_id:02d}.npz", **payload)
     print(f"Saved {len(processed)} subject files to {out_dir}")
 
 
@@ -275,14 +370,18 @@ def load_processed(in_dir=None, dataset: str = config.DEFAULT_DATASET) -> list[P
     for f in files:
         data = np.load(f)
         subject_id = int(f.stem.split("_")[1])
+        keys = set(data.files)
         processed.append(
             ProcessedSubject(
                 subject_id=subject_id,
                 windows=data["windows"],
                 trial_idx=data["trial_idx"],
-                valence=data["valence"],
-                arousal=data["arousal"],
-                dominance=data["dominance"],
+                valence=data["valence"] if "valence" in keys else None,
+                arousal=data["arousal"] if "arousal" in keys else None,
+                dominance=data["dominance"] if "dominance" in keys else None,
+                labels=data["labels"] if "labels" in keys else None,
+                rating_lo=float(data["rating_lo"]) if "rating_lo" in keys else None,
+                rating_hi=float(data["rating_hi"]) if "rating_hi" in keys else None,
             )
         )
     return processed
@@ -290,6 +389,22 @@ def load_processed(in_dir=None, dataset: str = config.DEFAULT_DATASET) -> list[P
 
 def run_preprocessing(dataset: str = config.DEFAULT_DATASET):
     dataset = config.normalize_dataset_name(dataset)
+    if dataset == "stew":
+        print("Loading raw STEW data...")
+        subjects = load_stew()
+
+        print("\nRunning STEW preprocessing pipeline (filter -> epoch -> normalize)...")
+        processed = process_all_stew_subjects(subjects)
+
+        total_windows = sum(p.windows.shape[0] for p in processed)
+        print(f"\nTotal windows across all STEW subjects: {total_windows}")
+        print(f"Window shape: {processed[0].windows.shape[1:]} (T, C)")
+        print(f"Windows per subject: min={min(p.windows.shape[0] for p in processed)}, "
+              f"max={max(p.windows.shape[0] for p in processed)}, "
+              f"mean={total_windows / len(processed):.1f}")
+
+        save_processed(processed, out_dir=config.processed_dir(dataset))
+        return processed
     if dataset != "dreamer":
         raise NotImplementedError(
             f"{dataset.upper()} preprocessing is not implemented yet. Add a dataset loader first, "

@@ -1,5 +1,5 @@
 """
-PyTorch Dataset wrapping the processed DREAMER windows + binary stress labels.
+PyTorch Dataset wrapping processed EEG windows and binary dataset labels.
 """
 
 import numpy as np

@@ -6,16 +6,17 @@ validation/test subjects -- that would leak information). Produces:
     - real vs synthetic waveform comparison plot (outputs/<dataset>/<run>/gan_waveform_check.png)
     - real vs synthetic t-SNE overlay (outputs/<dataset>/<run>/gan_tsne_check.png)
 
-IMPORTANT: run this per-fold if you want strict fold isolation (train GAN
-only on that fold's training subjects), or once on the full training pool
-if you're doing a simpler single train/test split for the with/without-GAN
-comparison your teacher asked for. See train_gan_pipeline() args.
+The fixed-split pipeline excludes both classifier-validation and test subjects
+from GAN training. The cross-validation comparison trains a separate GAN on
+each fold's inner-training subjects.
 
 Usage:
-    python -m src.train_gan --dataset dreamer --epochs 200
+    python -m src.train_gan --dataset stew --run_name gan_400epoch_seed42 --epochs 400 --seed 42
 """
 
 import argparse
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 
@@ -35,26 +36,46 @@ from .datasets import EEGWindowDataset
 from .gan import Generator, Critic, gradient_penalty, LATENT_DIM, weights_init
 from .labeling import build_dataset
 from .preprocessing import load_processed
+from .provenance import build_provenance, write_json
+from .reproducibility import set_seed
+from .synthetic_quality import evaluate_synthetic_quality
 
 
 N_CRITIC = 5  # critic updates per generator update (standard WGAN-GP ratio)
 LAMBDA_GP = 10.0
+GAN_LEARNING_RATE = 1e-4
+ADAM_BETAS = (0.0, 0.9)
+DEFAULT_AUGMENTATION_FRACTION = 0.25
+QUALITY_SAMPLES_PER_CLASS = 256
 
 
 import time
 
-def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
+def train_gan(X_train, y_train, device, epochs=200, batch_size=64,
+              lr: float = GAN_LEARNING_RATE, betas: tuple[float, float] = ADAM_BETAS,
+              seed: int = config.RANDOM_SEED):
+    set_seed(seed)
     n_timepoints, n_channels = X_train.shape[1], X_train.shape[2]
     gen = Generator(n_channels=n_channels, n_timepoints=n_timepoints).to(device)
     crit = Critic(n_channels=n_channels, n_timepoints=n_timepoints).to(device)
     gen.apply(weights_init)
     crit.apply(weights_init)
 
-    opt_gen = optim.Adam(gen.parameters(), lr=lr, betas=(0.5, 0.9))
-    opt_crit = optim.Adam(crit.parameters(), lr=lr, betas=(0.5, 0.9))
+    opt_gen = optim.Adam(gen.parameters(), lr=lr, betas=betas)
+    opt_crit = optim.Adam(crit.parameters(), lr=lr, betas=betas)
 
-    loader = DataLoader(EEGWindowDataset(X_train, y_train), batch_size=batch_size,
-                         shuffle=True, drop_last=True)
+    loader_generator = torch.Generator().manual_seed(seed)
+    loader = DataLoader(
+        EEGWindowDataset(X_train, y_train),
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True,
+        generator=loader_generator,
+    )
+    if len(loader) == 0:
+        raise ValueError(
+            f"GAN training has {len(X_train)} samples, fewer than batch_size={batch_size}."
+        )
 
     history = {"critic_loss": [], "gen_loss": [], "wasserstein_estimate": []}
 
@@ -63,12 +84,17 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
         t0 = time.time()
         epoch_critic_loss, epoch_gen_loss, epoch_wdist = [], [], []
 
-        for real, labels in loader:
-            real, labels = real.to(device), labels.to(device)
-            b = real.size(0)
-
+        data_iterator = iter(loader)
+        for _ in range(len(loader)):
             # --- Train critic ---
             for _ in range(N_CRITIC):
+                try:
+                    real, labels = next(data_iterator)
+                except StopIteration:
+                    data_iterator = iter(loader)
+                    real, labels = next(data_iterator)
+                real, labels = real.to(device), labels.to(device)
+                b = real.size(0)
                 z = torch.randn(b, LATENT_DIM, device=device)
                 fake = gen(z, labels).detach()
 
@@ -81,9 +107,8 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
                 opt_crit.zero_grad()
                 critic_loss.backward()
                 opt_crit.step()
-
-            epoch_critic_loss.append(critic_loss.item())
-            epoch_wdist.append((critic_real.mean() - critic_fake.mean()).item())
+                epoch_critic_loss.append(critic_loss.item())
+                epoch_wdist.append((critic_real.mean() - critic_fake.mean()).item())
 
             # --- Train generator ---
             z = torch.randn(b, LATENT_DIM, device=device)
@@ -96,9 +121,9 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
 
             epoch_gen_loss.append(gen_loss.item())
 
-        history["critic_loss"].append(np.mean(epoch_critic_loss))
-        history["gen_loss"].append(np.mean(epoch_gen_loss))
-        history["wasserstein_estimate"].append(np.mean(epoch_wdist))
+        history["critic_loss"].append(float(np.mean(epoch_critic_loss)))
+        history["gen_loss"].append(float(np.mean(epoch_gen_loss)))
+        history["wasserstein_estimate"].append(float(np.mean(epoch_wdist)))
 
         epoch_times.append(time.time() - t0)
         avg_epoch_time = np.mean(epoch_times[-5:])  # rolling average, last 5 epochs
@@ -114,7 +139,8 @@ def train_gan(X_train, y_train, device, epochs=200, batch_size=64, lr=1e-4):
     return gen, crit, history
 
 
-def generate_synthetic(gen, n_samples_by_class: dict, device, n_timepoints=512, n_channels=14):
+def generate_synthetic(gen, n_samples_by_class: dict, device, n_timepoints=512,
+                       n_channels=14, generation_batch_size: int = 512):
     """
     Generates synthetic windows per class.
     n_samples_by_class: e.g. {0: 500, 1: 500} or {1: 800} to generate only class 1.
@@ -126,11 +152,14 @@ def generate_synthetic(gen, n_samples_by_class: dict, device, n_timepoints=512, 
         for cls, n in n_samples_by_class.items():
             if n <= 0:
                 continue
-            z = torch.randn(n, LATENT_DIM, device=device)
-            labels = torch.full((n,), cls, dtype=torch.long, device=device)
-            fake = gen(z, labels).cpu().numpy()
-            X_list.append(fake)
-            y_list.append(np.full(n, cls, dtype=np.int64))
+            for start in range(0, n, generation_batch_size):
+                current_batch = min(generation_batch_size, n - start)
+                z = torch.randn(current_batch, LATENT_DIM, device=device)
+                labels = torch.full(
+                    (current_batch,), cls, dtype=torch.long, device=device
+                )
+                X_list.append(gen(z, labels).cpu().numpy().astype(np.float32))
+                y_list.append(np.full(current_batch, cls, dtype=np.int64))
     gen.train()
     if not X_list:
         return (np.empty((0, n_timepoints, n_channels), dtype=np.float32),
@@ -163,7 +192,8 @@ def plot_loss_curve(history, out_path):
     print(f"Saved loss curve to {out_path}")
 
 
-def plot_waveform_comparison(X_real, y_real, X_synth, y_synth, out_path, channel_idx=0):
+def plot_waveform_comparison(X_real, y_real, X_synth, y_synth, out_path,
+                             channel_idx=0, class_names=("class 0", "class 1")):
     available_classes = [c for c in (0, 1) if (y_synth == c).any()]
     if not available_classes:
         print(f"  [skip] no synthetic samples for any class -- skipping waveform plot")
@@ -175,17 +205,23 @@ def plot_waveform_comparison(X_real, y_real, X_synth, y_synth, out_path, channel
         real_sample = X_real[y_real == cls][0][:, channel_idx]
         synth_sample = X_synth[y_synth == cls][0][:, channel_idx]
         axes[row, 0].plot(real_sample)
-        axes[row, 0].set_title(f"REAL window, class={cls}, channel={channel_idx}")
+        axes[row, 0].set_title(f"REAL: {class_names[cls]}, channel={channel_idx}")
         axes[row, 1].plot(synth_sample, color="orange")
-        axes[row, 1].set_title(f"SYNTHETIC window, class={cls}, channel={channel_idx}")
+        axes[row, 1].set_title(f"SYNTHETIC: {class_names[cls]}, channel={channel_idx}")
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     print(f"Saved waveform comparison to {out_path}")
 
 
-def plot_tsne_overlay(X_real, y_real, X_synth, y_synth, out_path, max_points=1000):
+def plot_tsne_overlay(X_real, y_real, X_synth, y_synth, out_path, max_points=1000,
+                      class_names=("class 0", "class 1"),
+                      seed: int = config.RANDOM_SEED):
     from sklearn.manifold import TSNE
+
+    if len(X_synth) < 2:
+        print("  [skip] fewer than two synthetic samples -- skipping t-SNE plot")
+        return
 
     # Flatten windows to feature vectors for t-SNE (simple approach: mean+std per channel)
     def summarize(X):
@@ -211,7 +247,8 @@ def plot_tsne_overlay(X_real, y_real, X_synth, y_synth, out_path, max_points=100
     ])
     class_combined = np.concatenate([y_real_s, y_synth_s])
 
-    tsne = TSNE(n_components=2, random_state=config.RANDOM_SEED, perplexity=30)
+    perplexity = min(30, len(combined) - 1)
+    tsne = TSNE(n_components=2, random_state=seed, perplexity=perplexity)
     embedded = tsne.fit_transform(combined)
 
     fig, ax = plt.subplots(figsize=(7, 6))
@@ -219,9 +256,9 @@ def plot_tsne_overlay(X_real, y_real, X_synth, y_synth, out_path, max_points=100
         for cls, color in [(0, "tab:blue"), (1, "tab:red")]:
             mask = (labels_combined == source) & (class_combined == cls)
             ax.scatter(embedded[mask, 0], embedded[mask, 1], marker=marker, color=color,
-                       alpha=0.5, label=f"{source} class={cls}", s=15)
+                       alpha=0.5, label=f"{source}: {class_names[cls]}", s=15)
     ax.legend()
-    ax.set_title("t-SNE: real vs synthetic (o=real, x=synthetic; blue=non-stress, red=stress)")
+    ax.set_title("t-SNE: real vs synthetic EEG (o=real, x=synthetic)")
     fig.tight_layout()
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -232,22 +269,36 @@ def plot_tsne_overlay(X_real, y_real, X_synth, y_synth, out_path, max_points=100
 # Full pipeline
 # ---------------------------------------------------------------------------
 def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
-                       dataset: str = config.DEFAULT_DATASET, run_name: str | None = None):
+                       dataset: str = config.DEFAULT_DATASET, run_name: str | None = None,
+                       seed: int = config.RANDOM_SEED, overwrite: bool = False,
+                       augmentation_fraction: float = DEFAULT_AUGMENTATION_FRACTION,
+                       quality_samples_per_class: int = QUALITY_SAMPLES_PER_CLASS):
     """
-    Trains CWGAN-GP on the TRAINING SPLIT ONLY (from src/split.py -- never
-    touches test subjects), then generates and SAVES synthetic data to
-    data/processed/synthetic_train.npz so it can be inspected, reused, and
-    combined with real data by train_baseline_single.py without retraining
-    the GAN every time.
+    Trains CWGAN-GP on inner-training subjects only. Classifier-validation and
+    test subjects are excluded. Synthetic data includes protocol metadata so
+    train_baseline_single.py can reject mismatched runs.
     """
-    from .split import load_split, apply_split
+    from .split import apply_split_with_groups, inner_group_split_indices, load_split
 
     dataset = config.normalize_dataset_name(dataset)
+    if augmentation_fraction < 0:
+        raise ValueError("augmentation_fraction must be non-negative.")
+    if quality_samples_per_class <= 0:
+        raise ValueError("quality_samples_per_class must be positive.")
     run_name = run_name or f"gan_{epochs}epoch"
     processed_dir = config.processed_dir(dataset)
     model_dir = config.model_dir(dataset, run_name)
     output_dir = config.output_dir(dataset, run_name)
+    run_dir = config.run_dir(dataset, run_name)
+    synth_path = processed_dir / f"synthetic_train_{run_name}.npz"
+    existing_artifacts = [path for path in (model_dir, output_dir, run_dir, synth_path) if path.exists()]
+    if existing_artifacts and not overwrite:
+        raise FileExistsError(
+            "Run artifacts already exist; choose a new --run_name or pass --overwrite: "
+            + ", ".join(str(path) for path in existing_artifacts)
+        )
     device = config.get_device()
+    set_seed(seed)
     print(f"Using device: {device}")
     print(f"Dataset: {dataset} | run: {run_name}")
 
@@ -255,13 +306,30 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
     X, y, groups = build_dataset(processed)
 
     split_info = load_split(dataset=dataset)
-    X_train, y_train, X_test, y_test = apply_split(X, y, groups, split_info)
-    print(f"Training GAN on TRAIN split only: X_train={X_train.shape} "
-          f"(test split held out: {X_test.shape[0]} windows, never seen by GAN)")
-    print(f"Train class balance: stress={y_train.sum()} ({100*y_train.mean():.1f}%), "
-          f"non-stress={len(y_train)-y_train.sum()}")
+    X_train, y_train, groups_train, X_test, y_test, groups_test = apply_split_with_groups(
+        X, y, groups, split_info
+    )
+    inner_train_idx, inner_val_idx = inner_group_split_indices(groups_train, seed=seed)
+    if inner_val_idx is None:
+        raise ValueError("At least three training subjects are required for strict GAN isolation.")
+    X_gan, y_gan = X_train[inner_train_idx], y_train[inner_train_idx]
+    gan_train_subjects = sorted(np.unique(groups_train[inner_train_idx]).astype(int).tolist())
+    inner_val_subjects = sorted(np.unique(groups_train[inner_val_idx]).astype(int).tolist())
+    class0_name, class1_name = config.class_names(dataset)
+    print(f"GAN inner-train: X={X_gan.shape}, subjects={gan_train_subjects}")
+    print(f"Excluded classifier-validation subjects: {inner_val_subjects}")
+    print(f"Held-out test subjects: {split_info['test_subjects']}")
+    print(f"GAN class balance: class0={int((y_gan == 0).sum())} ({class0_name}), "
+          f"class1={int((y_gan == 1).sum())} ({class1_name})")
 
-    gen, crit, history = train_gan(X_train, y_train, device=device, epochs=epochs, batch_size=batch_size)
+    gen, crit, history = train_gan(
+        X_gan,
+        y_gan,
+        device=device,
+        epochs=epochs,
+        batch_size=batch_size,
+        seed=seed,
+    )
 
     model_dir.mkdir(parents=True, exist_ok=True)
     torch.save(gen.state_dict(), model_dir / "cwgan_gp_generator.pt")
@@ -272,22 +340,19 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
     output_dir.mkdir(parents=True, exist_ok=True)
     plot_loss_curve(history, output_dir / "gan_training_loss.png")
 
-    # Decide how much synthetic data to generate: by default, balance the
-    # minority (stress) class up to match the majority (non-stress) class
-    # within the TRAIN split only.
-    n_class0 = int((y_train == 0).sum())
-    n_class1 = int((y_train == 1).sum())
+    # Generate a predeclared fraction for both classes. This tests general
+    # augmentation rather than conflating augmentation with class balancing.
+    n_class0 = int((y_gan == 0).sum())
+    n_class1 = int((y_gan == 1).sum())
     if n_synth_per_class is None:
-        minority_deficit = abs(n_class0 - n_class1)
         n_synth_per_class = {
-            0: minority_deficit if n_class0 < n_class1 else 0,
-            1: minority_deficit if n_class1 < n_class0 else 0,
+            0: int(round(n_class0 * augmentation_fraction)),
+            1: int(round(n_class1 * augmentation_fraction)),
         }
-        # also generate a modest amount for the majority class so both classes
-        # get *some* augmentation, not just the minority -- helps compare
-        # "pure rebalancing" vs "general augmentation" if you want that later
-        print(f"Auto-balancing: generating {minority_deficit} extra synthetic samples "
-              f"for the minority class to match the majority class count.")
+        print(
+            f"Augmentation fraction={augmentation_fraction:.2f}: generating "
+            f"class0={n_synth_per_class[0]}, class1={n_synth_per_class[1]}."
+        )
     else:
         n_synth_per_class = {0: n_synth_per_class, 1: n_synth_per_class}
 
@@ -303,15 +368,86 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
     y_synth = np.concatenate(y_synth_list, axis=0) if y_synth_list else np.empty((0,), dtype=np.int64)
 
     # SAVE the synthetic data to disk -- this is the actual deliverable file
-    synth_path = processed_dir / f"synthetic_train_{run_name}.npz"
-    np.savez_compressed(synth_path, X_synth=X_synth, y_synth=y_synth)
+    np.savez_compressed(
+        synth_path,
+        X_synth=X_synth,
+        y_synth=y_synth,
+        dataset=np.array(dataset),
+        random_seed=np.array(seed, dtype=np.int64),
+        gan_train_subjects=np.asarray(gan_train_subjects, dtype=np.int64),
+        inner_val_subjects=np.asarray(inner_val_subjects, dtype=np.int64),
+        test_subjects=np.asarray(split_info["test_subjects"], dtype=np.int64),
+    )
     print(f"\nSaved {len(y_synth)} synthetic windows to {synth_path}")
-    print(f"  synthetic class 0 (non-stress): {(y_synth==0).sum()}")
-    print(f"  synthetic class 1 (stress):     {(y_synth==1).sum()}")
+    print(f"  synthetic class 0 ({class0_name}): {(y_synth==0).sum()}")
+    print(f"  synthetic class 1 ({class1_name}): {(y_synth==1).sum()}")
 
-    # Validation plots comparing real TRAIN data to the saved synthetic data
-    plot_waveform_comparison(X_train, y_train, X_synth, y_synth, output_dir / "gan_waveform_check.png")
-    plot_tsne_overlay(X_train, y_train, X_synth, y_synth, output_dir / "gan_tsne_check.png")
+    # Quality evaluation is always balanced across both labels and is separate
+    # from the samples used to augment classifier training.
+    X_quality, y_quality = generate_synthetic(
+        gen,
+        {0: quality_samples_per_class, 1: quality_samples_per_class},
+        device,
+        n_timepoints=X.shape[1],
+        n_channels=X.shape[2],
+    )
+
+    # Validation plots comparing real GAN-training data to balanced quality samples
+    class_names = (class0_name, class1_name)
+    plot_waveform_comparison(
+        X_gan, y_gan, X_quality, y_quality,
+        output_dir / "gan_waveform_check.png", class_names=class_names,
+    )
+    plot_tsne_overlay(
+        X_gan, y_gan, X_quality, y_quality,
+        output_dir / "gan_tsne_check.png", class_names=class_names, seed=seed,
+    )
+
+    quality = evaluate_synthetic_quality(X_gan, y_gan, X_quality, y_quality)
+    quality_path = output_dir / "synthetic_quality.json"
+    with open(quality_path, "w") as f:
+        json.dump(quality, f, indent=2)
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    write_json(run_dir / "training_history.json", history)
+    split_path = config.processed_dir(dataset) / "split.json"
+    manifest = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "dataset": dataset,
+        "run_name": run_name,
+        "model": "CWGAN-GP",
+        "random_seed": seed,
+        "device": str(device),
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "learning_rate": GAN_LEARNING_RATE,
+        "adam_betas": list(ADAM_BETAS),
+        "n_critic": N_CRITIC,
+        "lambda_gp": LAMBDA_GP,
+        "augmentation_fraction": augmentation_fraction,
+        "quality_samples_per_class": quality_samples_per_class,
+        "window_samples": int(X.shape[1]),
+        "n_channels": int(X.shape[2]),
+        "normalization": config.STEW_NORMALIZATION if dataset == "stew" else config.NORMALIZATION,
+        "artifact_mad_multiplier": config.artifact_rejection_mad_multiplier(dataset),
+        "gan_train_subjects": gan_train_subjects,
+        "inner_val_subjects": inner_val_subjects,
+        "test_subjects": split_info["test_subjects"],
+        "real_gan_train_class_counts": {"0": n_class0, "1": n_class1},
+        "synthetic_class_counts": {
+            "0": int((y_synth == 0).sum()),
+            "1": int((y_synth == 1).sum()),
+        },
+        "artifacts": {
+            "generator": str((model_dir / "cwgan_gp_generator.pt").relative_to(config.PROJECT_ROOT)),
+            "critic": str((model_dir / "cwgan_gp_critic.pt").relative_to(config.PROJECT_ROOT)),
+            "synthetic_data": str(synth_path.relative_to(config.PROJECT_ROOT)),
+            "quality_report": str(quality_path.relative_to(config.PROJECT_ROOT)),
+        },
+        "provenance": build_provenance(dataset, split_path),
+    }
+    write_json(run_dir / "manifest.json", manifest)
+    print(f"Saved reproducibility manifest and history to {run_dir}")
 
     print(f"\nGAN training complete. Review:")
     print(f"  {output_dir / 'gan_training_loss.png'}")
@@ -328,7 +464,14 @@ if __name__ == "__main__":
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=config.RANDOM_SEED)
+    parser.add_argument("--augmentation_fraction", type=float, default=DEFAULT_AUGMENTATION_FRACTION)
+    parser.add_argument("--quality_samples_per_class", type=int, default=QUALITY_SAMPLES_PER_CLASS)
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     train_gan_pipeline(epochs=args.epochs, batch_size=args.batch_size,
-                       dataset=args.dataset, run_name=args.run_name)
+                       dataset=args.dataset, run_name=args.run_name, seed=args.seed,
+                       overwrite=args.overwrite,
+                       augmentation_fraction=args.augmentation_fraction,
+                       quality_samples_per_class=args.quality_samples_per_class)
