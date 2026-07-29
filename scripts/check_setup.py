@@ -63,11 +63,14 @@ def main() -> int:
     status("run manifests", bool(manifest_files), f"{len(manifest_files)} manifest(s) under {run_dir}")
 
     print("\nRecommended commands:")
-    print(f"  python -m src.preprocessing --dataset {dataset}")
-    print(f"  python -m src.split --dataset {dataset}")
-    print(f"  python -m src.train_gan --dataset {dataset} --run_name gan_400epoch_seed42_frac25 --epochs 400 --seed 42 --augmentation_fraction 0.25")
-    print(f"  python -m src.train_baseline_single --dataset {dataset} --model eegnet_adapted --epochs 30 --seed 42")
-    print(f"  python -m src.compare_gan_augmentation --dataset {dataset} --model eegnet_adapted --gan_epochs 200 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25")
+    print(f"  python3 -m src.preprocessing --dataset {dataset}")
+    print(f"  python3 -m src.split --dataset {dataset}")
+    print(f"  python3 -m src.train_baseline --dataset {dataset} --epochs 30 --folds 5 --seed 42")
+    print(
+        f"  python3 -m src.compare_gan_augmentation --dataset {dataset} "
+        "--model 1dcnn --gan_epochs 400 --clf_epochs 30 --folds 5 "
+        "--seed 42 --synth_fraction 0.25 --gan_cache_name stew_cv_gan_seed42_frac25"
+    )
 
     return 0
 

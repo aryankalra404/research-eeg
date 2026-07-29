@@ -16,7 +16,7 @@ to the inner-training partition, never to inner-validation or the held-out
 fold.
 
 Usage:
-    python -m src.compare_gan_augmentation --dataset dreamer --model 1dcnn --gan_epochs 200 --clf_epochs 30
+    python3 -m src.compare_gan_augmentation --dataset stew --model 1dcnn --gan_epochs 200 --clf_epochs 30
 """
 
 import argparse
@@ -27,16 +27,24 @@ import torch
 from sklearn.model_selection import GroupKFold
 
 from . import config
-from .augmentation import generate_simple_augmentation
+from .augmentation import augmentation_counts_by_class, generate_simple_augmentation
 from .evaluation import (
     holm_adjust_p_values,
     paired_sign_flip_test,
     paired_subject_cluster_test,
 )
 from .labeling import build_dataset
+from .models import model_metadata
 from .preprocessing import load_processed
 from .provenance import build_provenance, write_json
-from .reporting import comparison_table_rows, write_comparison_plot, write_csv
+from .reporting import (
+    comparison_table_rows,
+    upsert_csv,
+    write_comparison_plot,
+    write_comparison_diagnostic_plots,
+    write_csv,
+    write_learning_curve_plot,
+)
 from .reproducibility import set_seed
 from .split import inner_group_split_indices
 from .synthetic_quality import evaluate_synthetic_quality, save_synthetic_quality_plots
@@ -48,8 +56,58 @@ from .train_gan import (
     N_CRITIC,
     QUALITY_SAMPLES_PER_CLASS,
     generate_synthetic,
+    plot_loss_curve,
     train_gan,
 )
+
+
+def _load_fold_gan_cache(cache_path, expected_metadata: dict):
+    with np.load(cache_path, allow_pickle=False) as cached:
+        required = {
+            "X_synth", "y_synth", "X_quality", "y_quality", "metadata_json"
+        }
+        missing = required - set(cached.files)
+        if missing:
+            raise ValueError(
+                f"GAN cache {cache_path} is incomplete (missing {sorted(missing)})."
+            )
+        metadata = json.loads(str(cached["metadata_json"].item()))
+        mismatches = {
+            key: {"expected": expected, "found": metadata.get(key)}
+            for key, expected in expected_metadata.items()
+            if metadata.get(key) != expected
+        }
+        if mismatches:
+            raise ValueError(
+                f"GAN cache {cache_path} does not match this protocol: {mismatches}. "
+                "Choose a new --gan_cache_name."
+            )
+        return (
+            cached["X_synth"].astype(np.float32),
+            cached["y_synth"].astype(np.int64),
+            cached["X_quality"].astype(np.float32),
+            cached["y_quality"].astype(np.int64),
+            metadata["training_history"],
+        )
+
+
+def _save_fold_gan_cache(
+    cache_path,
+    X_synth,
+    y_synth,
+    X_quality,
+    y_quality,
+    metadata,
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        cache_path,
+        X_synth=X_synth,
+        y_synth=y_synth,
+        X_quality=X_quality,
+        y_quality=y_quality,
+        metadata_json=np.array(json.dumps(metadata)),
+    )
 
 
 def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
@@ -58,14 +116,15 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
                     seed: int = config.RANDOM_SEED, run_name: str | None = None,
                     quality_samples_per_class: int = QUALITY_SAMPLES_PER_CLASS,
                     include_simple_augmentation: bool = False,
+                    gan_cache_name: str | None = None,
                     overwrite: bool = False):
     """
     synth_fraction: synthetic samples added for each class relative to that
     class's real inner-training count. For example, 0.25 adds 25% per class.
     """
     dataset = config.normalize_dataset_name(dataset)
-    if synth_fraction < 0:
-        raise ValueError("synth_fraction must be non-negative.")
+    if not np.isfinite(synth_fraction) or synth_fraction < 0:
+        raise ValueError("synth_fraction must be finite and non-negative.")
     if quality_samples_per_class <= 0:
         raise ValueError("quality_samples_per_class must be positive.")
     run_name = run_name or f"gan_comparison_{model_name}_seed{seed}_frac{synth_fraction:g}"
@@ -110,6 +169,7 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             "quality_samples_per_class": quality_samples_per_class,
             "run_name": run_name,
             "include_simple_augmentation": include_simple_augmentation,
+            "gan_cache_name": gan_cache_name,
         },
     }
 
@@ -147,41 +207,121 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
         print(f"    acc={metrics_no_gan['accuracy']:.3f} f1_macro={metrics_no_gan['f1_macro']:.3f}")
         results["without_gan"].append(metrics_no_gan)
 
-        # The GAN sees inner-training subjects only. Inner-validation subjects
-        # must remain independent because they select the classifier checkpoint.
         gan_seed = seed + 10_000 + fold_i
-        print("  [with GAN] training CWGAN-GP on inner-training subjects only...")
-        gen, crit, history = train_gan(
-            X_it,
-            y_it,
-            device=device,
-            epochs=gan_epochs,
-            batch_size=batch_size,
-            seed=gan_seed,
-        )
-
-        n_class0 = int((y_it == 0).sum())
-        n_class1 = int((y_it == 1).sum())
-        n_by_class = {
-            0: int(round(n_class0 * synth_fraction)),
-            1: int(round(n_class1 * synth_fraction)),
+        n_by_class = augmentation_counts_by_class(y_it, synth_fraction)
+        cache_metadata = {
+            "dataset": dataset,
+            "fold": fold_i + 1,
+            "base_seed": seed,
+            "gan_seed": gan_seed,
+            "gan_epochs": gan_epochs,
+            "gan_batch_size": batch_size,
+            "synth_fraction_per_class": synth_fraction,
+            "quality_samples_per_class": quality_samples_per_class,
+            "synthetic_class_counts": {
+                "0": n_by_class[0],
+                "1": n_by_class[1],
+            },
+            "n_timepoints": int(X_it.shape[1]),
+            "n_channels": int(X_it.shape[2]),
+            "inner_train_subjects": inner_train_subjects,
+            "inner_val_subjects": inner_val_subjects,
+            "holdout_subjects": val_subjects,
+            "processed_subjects_sha256": provenance["processed_subjects_sha256"],
         }
-        print(
-            f"  Generating augmentation fraction={synth_fraction:.2f}: "
-            f"class0={n_by_class[0]}, class1={n_by_class[1]}..."
+        cache_path = (
+            config.processed_dir(dataset)
+            / "gan_cv_cache"
+            / gan_cache_name
+            / f"fold_{fold_i + 1}.npz"
+            if gan_cache_name
+            else None
         )
-        X_synth, y_synth = generate_synthetic(
-            gen, n_by_class, device,
-            n_timepoints=X_it.shape[1], n_channels=X_it.shape[2],
+        cache_reused = bool(cache_path and cache_path.exists())
+        gen = crit = None
+        if cache_reused:
+            print(f"  [with GAN] reusing validated fold cache: {cache_path}")
+            X_synth, y_synth, X_quality, y_quality, history = _load_fold_gan_cache(
+                cache_path, cache_metadata
+            )
+        else:
+            # The GAN sees inner-training subjects only. Inner-validation and
+            # held-out subjects are encoded in the cache metadata but never used
+            # for GAN optimization.
+            print("  [with GAN] training CWGAN-GP on inner-training subjects only...")
+            gen, crit, history = train_gan(
+                X_it,
+                y_it,
+                device=device,
+                epochs=gan_epochs,
+                batch_size=batch_size,
+                seed=gan_seed,
+            )
+            print(
+                f"  Generating augmentation fraction={synth_fraction:.2f}: "
+                f"class0={n_by_class[0]}, class1={n_by_class[1]}..."
+            )
+            X_synth, y_synth = generate_synthetic(
+                gen, n_by_class, device,
+                n_timepoints=X_it.shape[1], n_channels=X_it.shape[2],
+            )
+            X_quality, y_quality = generate_synthetic(
+                gen,
+                {0: quality_samples_per_class, 1: quality_samples_per_class},
+                device,
+                n_timepoints=X_it.shape[1],
+                n_channels=X_it.shape[2],
+            )
+            if cache_path:
+                cache_payload = {
+                    **cache_metadata,
+                    "training_history": history,
+                }
+                _save_fold_gan_cache(
+                    cache_path,
+                    X_synth,
+                    y_synth,
+                    X_quality,
+                    y_quality,
+                    cache_payload,
+                )
+                cache_model_dir = (
+                    config.model_dir(dataset, gan_cache_name)
+                    / f"fold_{fold_i + 1}"
+                )
+                cache_model_dir.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    gen.state_dict(),
+                    cache_model_dir / "cwgan_gp_generator.pt",
+                )
+                torch.save(
+                    crit.state_dict(),
+                    cache_model_dir / "cwgan_gp_critic.pt",
+                )
+                write_json(
+                    config.run_dir(dataset, gan_cache_name)
+                    / f"fold_{fold_i + 1}"
+                    / "manifest.json",
+                    {
+                        "run_type": "fold_isolated_gan_cache",
+                        **cache_payload,
+                        "cache_path": str(cache_path.relative_to(config.PROJECT_ROOT)),
+                        "model_directory": str(
+                            cache_model_dir.relative_to(config.PROJECT_ROOT)
+                        ),
+                        "provenance": provenance,
+                    },
+                )
+        gan_loss_path = (
+            config.output_dir(dataset, gan_cache_name)
+            / f"fold_{fold_i + 1}"
+            / "gan_training_loss.png"
+            if gan_cache_name
+            else fold_output_dir / "gan_training_loss.png"
         )
-
-        X_quality, y_quality = generate_synthetic(
-            gen,
-            {0: quality_samples_per_class, 1: quality_samples_per_class},
-            device,
-            n_timepoints=X_it.shape[1],
-            n_channels=X_it.shape[2],
-        )
+        if not gan_loss_path.exists():
+            gan_loss_path.parent.mkdir(parents=True, exist_ok=True)
+            plot_loss_curve(history, gan_loss_path)
         quality = evaluate_synthetic_quality(
             X_it,
             y_it,
@@ -242,9 +382,21 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
         print(f"    acc={metrics_gan['accuracy']:.3f} f1_macro={metrics_gan['f1_macro']:.3f}")
         results["with_gan"].append(metrics_gan)
 
+        learning_curve_conditions = {
+            "without_gan": metrics_no_gan,
+            "with_gan": metrics_gan,
+        }
+        if include_simple_augmentation:
+            learning_curve_conditions["with_simple_augmentation"] = metrics_simple
+        write_learning_curve_plot(
+            fold_output_dir / "classifier_learning_curves.png",
+            learning_curve_conditions,
+        )
+
         fold_model_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(gen.state_dict(), fold_model_dir / "cwgan_gp_generator.pt")
-        torch.save(crit.state_dict(), fold_model_dir / "cwgan_gp_critic.pt")
+        if gen is not None and not gan_cache_name:
+            torch.save(gen.state_dict(), fold_model_dir / "cwgan_gp_generator.pt")
+            torch.save(crit.state_dict(), fold_model_dir / "cwgan_gp_critic.pt")
         torch.save(model_no_gan.state_dict(), fold_model_dir / f"{model_name}_without_gan.pt")
         torch.save(model_gan.state_dict(), fold_model_dir / f"{model_name}_with_gan.pt")
         if include_simple_augmentation:
@@ -258,6 +410,7 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             "run_type": "paired_per_fold_gan_comparison",
             "dataset": dataset,
             "model": model_name,
+            "model_metadata": model_metadata(model_name),
             "fold": fold_i + 1,
             "classifier_seed": classifier_seed,
             "gan_seed": gan_seed,
@@ -269,6 +422,16 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             "synth_fraction_per_class": synth_fraction,
             "synthetic_class_counts": {"0": n_by_class[0], "1": n_by_class[1]},
             "quality_samples_per_class": quality_samples_per_class,
+            "gan_cache_name": gan_cache_name,
+            "gan_cache_reused": cache_reused,
+            "gan_cache_path": (
+                str(cache_path.relative_to(config.PROJECT_ROOT))
+                if cache_path
+                else None
+            ),
+            "gan_training_loss_plot": str(
+                gan_loss_path.relative_to(config.PROJECT_ROOT)
+            ),
             "gan_optimizer": {
                 "name": "Adam",
                 "learning_rate": GAN_LEARNING_RATE,
@@ -333,12 +496,23 @@ def run_comparison(model_name: str, gan_epochs: int, clf_epochs: int,
             cluster_tests[name]["holm_adjusted_p_value"] = adjusted_p
         results["subject_cluster_tests"][condition] = cluster_tests
     write_json(config.run_dir(dataset, run_name) / "comparison_summary.json", results)
+    table_rows = comparison_table_rows(results, model_name)
     write_csv(
         config.output_dir(dataset, run_name) / "comparison_table.csv",
-        comparison_table_rows(results, model_name),
+        table_rows,
+    )
+    upsert_csv(
+        config.output_dir(dataset) / "gan_comparison_master_table.csv",
+        table_rows,
+        key_fields=("run_name", "model", "augmentation", "level", "metric"),
     )
     write_comparison_plot(
         config.output_dir(dataset, run_name) / "comparison_performance.png",
+        results,
+    )
+    write_comparison_diagnostic_plots(
+        config.output_dir(dataset, run_name)
+        / "comparison_classification_diagnostics.png",
         results,
     )
     return results
@@ -398,9 +572,26 @@ if __name__ == "__main__":
     parser.add_argument("--folds", type=int, default=config.N_FOLDS)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=config.RANDOM_SEED)
-    parser.add_argument("--synth_fraction", type=float, default=0.25)
+    parser.add_argument(
+        "--synth_fraction",
+        type=float,
+        default=0.25,
+        help=(
+            "Extra synthetic windows per class as a fraction of that class's "
+            "real inner-training windows (default: 0.25)."
+        ),
+    )
     parser.add_argument("--quality_samples_per_class", type=int, default=QUALITY_SAMPLES_PER_CLASS)
     parser.add_argument("--include_simple_augmentation", action="store_true")
+    parser.add_argument(
+        "--gan_cache_name",
+        type=str,
+        default=None,
+        help=(
+            "Shared, protocol-validated per-fold GAN cache. Use the same name "
+            "across classifier runs to train each fold GAN only once."
+        ),
+    )
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -411,6 +602,7 @@ if __name__ == "__main__":
         seed=args.seed, synth_fraction=args.synth_fraction, run_name=args.run_name,
         quality_samples_per_class=args.quality_samples_per_class,
         include_simple_augmentation=args.include_simple_augmentation,
+        gan_cache_name=args.gan_cache_name,
         overwrite=args.overwrite,
     )
     summarize_comparison(results, args.model)

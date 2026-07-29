@@ -115,6 +115,173 @@ STEW is the active/default dataset. Labels are experimental conditions:
 `lo/rest=0` and `hi/SIMKAP multitasking=1`. Describe the task as workload
 classification, not validated clinical-stress diagnosis.
 
+### Recommended STEW Commands
+
+Create the subject-independent fixed split once:
+
+```bash
+python3 -m src.split --dataset stew
+```
+
+Train and evaluate a real-only classifier:
+
+```bash
+python3 -m src.train_baseline_single \
+  --dataset stew \
+  --model gru \
+  --epochs 30 \
+  --seed 42
+```
+
+Train the conditional GAN and generate 25% additional windows for **each**
+class:
+
+```bash
+python3 -m src.train_gan \
+  --dataset stew \
+  --run_name stew_gan_seed42_frac25 \
+  --epochs 400 \
+  --augmentation_fraction 0.25 \
+  --seed 42
+```
+
+This leaves the real STEW files unchanged. It saves only the generated training
+windows to
+`data/processed/stew/synthetic_train_stew_gan_seed42_frac25.npz`, together with
+the dataset, seed, GAN-training subjects, classifier-validation subjects, and
+held-out test subjects.
+
+Train and evaluate the same classifier with those synthetic windows added only
+to its inner-training partition:
+
+```bash
+python3 -m src.train_baseline_single \
+  --dataset stew \
+  --model gru \
+  --use_gan \
+  --gan_run stew_gan_seed42_frac25 \
+  --epochs 30 \
+  --seed 42
+```
+
+The two classifier commands use the same split, initialization seed, real-only
+validation set, and real-only test set. Once both finish,
+`outputs/stew/single_split_results.json` contains their metrics and the terminal
+prints the accuracy and macro-F1 deltas.
+
+For the paper-quality comparison, prefer the stricter paired cross-validation
+command. It trains a separate GAN inside every fold, evaluates real-only versus
+real-plus-synthetic on identical held-out subjects, and never reuses one saved
+synthetic dataset across folds:
+
+```bash
+python3 -m src.compare_gan_augmentation \
+  --dataset stew \
+  --model gru \
+  --gan_epochs 400 \
+  --clf_epochs 30 \
+  --folds 5 \
+  --synth_fraction 0.25 \
+  --gan_cache_name stew_cv_gan_seed42_frac25 \
+  --seed 42 \
+  --run_name stew_gru_gan_cv_seed42_frac25
+```
+
+An augmentation fraction of `0.25` adds 25% of the real class-0 count and 25%
+of the real class-1 count. It increases both conditions proportionally; it is
+not a minority-class balancing operation. GAN augmentation is an experimental
+factor, not a guaranteed accuracy improvement, so predeclare the fraction and
+repeat the comparison across several seeds.
+
+### Active Classifier Suite
+
+The default real-only baseline command runs:
+
+```text
+1dcnn, rnn, lstm, bilstm, gru, gnn, vit, swin
+```
+
+`lstm` is unidirectional and `bilstm` is bidirectional. Historical `lstm`
+artifacts created before this distinction used the bidirectional architecture
+and must be rerun for a correctly labeled comparison.
+
+ViT and Swin are compact EEG adaptations, not exact reproductions of the
+original image models. Both compute a Hann-window log-magnitude STFT internally
+(`n_fft=64`, `hop_length=16`, 0-45 Hz), ensuring that real and GAN-generated raw
+EEG receive the identical transformation. The GNN uses the 14 electrodes as
+nodes and a symmetric three-nearest-neighbor graph based on the MNE
+`standard_1020` three-dimensional electrode coordinates.
+
+EEGNetAdapted, DeepConvNetAdapted, ShallowConvNetAdapted, and TemporalCNN remain
+available by explicit `--model` name but are excluded from the default suite.
+
+Run all active models without GAN:
+
+```bash
+python3 -m src.train_baseline \
+  --dataset stew \
+  --epochs 30 \
+  --folds 5 \
+  --seed 42 \
+  --run_name stew_active_real_only_seed42
+```
+
+Run the paired per-fold GAN comparison for every active model:
+
+```bash
+for model in 1dcnn rnn lstm bilstm gru gnn vit swin; do
+  python3 -m src.compare_gan_augmentation \
+    --dataset stew \
+    --model "$model" \
+    --gan_epochs 400 \
+    --clf_epochs 30 \
+    --folds 5 \
+    --synth_fraction 0.25 \
+    --gan_cache_name stew_cv_gan_seed42_frac25 \
+    --seed 42 \
+    --run_name "stew_${model}_gan_cv_seed42_frac25"
+done
+```
+
+The first model trains and caches one subject-isolated GAN per fold. Later
+models validate and reuse those exact fold-specific synthetic samples, avoiding
+redundant GAN training while preserving a paired comparison. This creates a
+complete real-only versus GAN-augmented result for each architecture. For every
+fold, the output includes per-epoch training and real-validation accuracy/loss,
+selected-checkpoint training/validation accuracy/loss, one final real holdout
+accuracy/loss, macro-F1 and the broader research metrics. Each completed model is merged into
+`outputs/stew/gan_comparison_master_table.csv`. Never plot or inspect holdout
+performance at every epoch.
+
+### Final Comparison Outputs
+
+Each model run writes:
+
+```text
+outputs/stew/<run_name>/comparison_table.csv
+outputs/stew/<run_name>/comparison_performance.png
+outputs/stew/<run_name>/comparison_classification_diagnostics.png
+outputs/stew/<run_name>/fold_<n>/classifier_learning_curves.png
+outputs/stew/<run_name>/fold_<n>/synthetic_quality.json
+outputs/stew/<run_name>/fold_<n>/real_vs_synthetic_psd.png
+outputs/stew/<run_name>/fold_<n>/real_vs_synthetic_channel_correlation.png
+outputs/stew/<run_name>.json
+
+runs/stew/<run_name>/comparison_summary.json
+runs/stew/<run_name>/fold_<n>/manifest.json
+runs/stew/<run_name>/fold_<n>/gan_training_history.json
+
+models/stew/<run_name>/fold_<n>/<model>_without_gan.pt
+models/stew/<run_name>/fold_<n>/<model>_with_gan.pt
+```
+
+The shared fold GAN cache additionally writes its synthetic arrays, generator
+and critic checkpoints, GAN loss plots, and protocol manifests. The master
+`outputs/stew/gan_comparison_master_table.csv` combines completed model runs.
+Its before/after columns include selected-checkpoint training accuracy/loss,
+real-validation accuracy/loss, final real test accuracy/loss, macro-F1 and
+subject-level statistics.
+
 Preprocessing uses 0.5-45 Hz filtering, 4-second windows, 50% overlap, a
 STEW-calibrated MAD artifact multiplier of 60, and per-window/per-channel
 z-scoring. The multiplier was selected using fixed training subjects only

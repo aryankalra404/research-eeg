@@ -5,6 +5,25 @@ from __future__ import annotations
 import numpy as np
 
 
+def augmentation_counts_by_class(
+    y: np.ndarray,
+    fraction: float,
+    *,
+    class_ids: tuple[int, ...] = (0, 1),
+) -> dict[int, int]:
+    """Return a predeclared augmentation count for every class."""
+    if not np.isfinite(fraction) or fraction < 0:
+        raise ValueError("augmentation fraction must be finite and non-negative.")
+
+    counts = {}
+    for class_id in class_ids:
+        real_count = int(np.count_nonzero(y == class_id))
+        if real_count == 0:
+            raise ValueError(f"No real training windows available for class {class_id}.")
+        counts[class_id] = int(round(real_count * fraction))
+    return counts
+
+
 def _renormalize_window_channels(windows: np.ndarray) -> np.ndarray:
     mean = windows.mean(axis=1, keepdims=True)
     std = windows.std(axis=1, keepdims=True)

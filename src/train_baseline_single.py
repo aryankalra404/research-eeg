@@ -10,8 +10,8 @@ runs, and the GAN training/validation plots are a one-time artifact instead
 of being regenerated 5+ times.
 
 Usage:
-    python -m src.train_baseline_single --dataset stew --model eegnet_adapted
-    python -m src.train_baseline_single --dataset stew --model eegnet_adapted --use_gan --gan_run gan_400epoch
+    python3 -m src.train_baseline_single --dataset stew --model gru
+    python3 -m src.train_baseline_single --dataset stew --model gru --use_gan --gan_run gan_400epoch
 """
 
 import argparse

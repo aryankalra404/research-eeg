@@ -34,6 +34,15 @@ def directory_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def files_sha256(paths: list[Path]) -> str:
+    """Hash a selected artifact set without including unrelated generated files."""
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(file_sha256(path).encode("ascii"))
+    return digest.hexdigest()
+
+
 def _git(command: list[str]) -> str | None:
     try:
         result = subprocess.run(
@@ -87,12 +96,16 @@ def preprocessing_snapshot(dataset: str) -> dict:
 
 def build_provenance(dataset: str, split_path: Path | None = None) -> dict:
     raw_path = config.raw_dir(dataset)
+    processed_subjects = list(config.processed_dir(dataset).glob("subject_*.npz"))
+    if not processed_subjects and dataset == "dreamer":
+        processed_subjects = list(config.DATA_PROCESSED.glob("subject_*.npz"))
     return {
         "git": git_provenance(),
         "runtime": runtime_versions(),
         "dataset_spec": config.dataset_spec_dict(dataset),
         "preprocessing": preprocessing_snapshot(dataset),
         "raw_data_sha256": directory_sha256(raw_path),
+        "processed_subjects_sha256": files_sha256(processed_subjects),
         "split_sha256": file_sha256(split_path) if split_path and split_path.exists() else None,
     }
 

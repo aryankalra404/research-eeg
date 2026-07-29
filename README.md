@@ -19,15 +19,17 @@ raw EEG dataset
   -> comparison tables/plots for research writeup
 ```
 
-Implemented model families include 1D-CNN, Vanilla LSTM, TemporalCNN, and
-explicitly named EEGNet/DeepConvNet/ShallowConvNet adaptations. The literature-
-derived networks are not presented as exact reproductions of the original models.
+The active classifier suite includes 1D-CNN, vanilla RNN, unidirectional LSTM,
+BiLSTM, GRU, an electrode-graph GNN, and STFT-based ViT and Swin adaptations.
+TemporalCNN and explicitly named EEGNet/DeepConvNet/ShallowConvNet adaptations
+remain available for later experiments but are excluded from default runs. The
+literature-derived networks are not presented as exact reproductions.
 
 ## Current Status
 
 STEW is the active/default dataset. It has raw loading, condition-based labels,
 leakage-free window normalization, STEW-calibrated artifact rejection,
-subject-independent splitting, six baseline classifiers, strict CWGAN-GP
+subject-independent splitting, eight active baseline classifiers, strict CWGAN-GP
 isolation, deterministic seeds, run manifests, and synthetic-quality metrics.
 
 For STEW, the target is workload condition, not clinical stress:
@@ -332,7 +334,8 @@ python3 -m src.split --dataset stew
 python3 -m src.labeling --dataset stew
 ```
 
-Run all six real-data baselines with subject-independent cross-validation:
+Run all eight active real-data baselines with subject-independent
+cross-validation:
 
 ```bash
 python3 -m src.train_baseline --dataset stew --epochs 30 --folds 5 --seed 42
@@ -347,14 +350,14 @@ python3 -m src.train_gan --dataset stew --run_name gan_400epoch_seed42_frac25 --
 Compare one classifier on the fixed split:
 
 ```bash
-python3 -m src.train_baseline_single --dataset stew --model eegnet_adapted --epochs 30 --seed 42
-python3 -m src.train_baseline_single --dataset stew --model eegnet_adapted --use_gan --gan_run gan_400epoch_seed42_frac25 --epochs 30 --seed 42
+python3 -m src.train_baseline_single --dataset stew --model gru --epochs 30 --seed 42
+python3 -m src.train_baseline_single --dataset stew --model gru --use_gan --gan_run gan_400epoch_seed42_frac25 --epochs 30 --seed 42
 ```
 
 Run the stricter per-fold comparison used for research reporting:
 
 ```bash
-python3 -m src.compare_gan_augmentation --dataset stew --model eegnet_adapted --gan_epochs 400 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25 --include_simple_augmentation
+python3 -m src.compare_gan_augmentation --dataset stew --model gru --gan_epochs 400 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25 --gan_cache_name stew_cv_gan_seed42_frac25 --include_simple_augmentation
 ```
 
 Every fixed-split GAN run saves:

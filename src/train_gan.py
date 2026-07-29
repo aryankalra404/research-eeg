@@ -32,6 +32,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from . import config
+from .augmentation import augmentation_counts_by_class
 from .datasets import EEGWindowDataset
 from .gan import Generator, Critic, gradient_penalty, LATENT_DIM, weights_init
 from .labeling import build_dataset
@@ -294,8 +295,8 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
     from .split import apply_split_with_groups, inner_group_split_indices, load_split
 
     dataset = config.normalize_dataset_name(dataset)
-    if augmentation_fraction < 0:
-        raise ValueError("augmentation_fraction must be non-negative.")
+    if not np.isfinite(augmentation_fraction) or augmentation_fraction < 0:
+        raise ValueError("augmentation_fraction must be finite and non-negative.")
     if quality_samples_per_class <= 0:
         raise ValueError("quality_samples_per_class must be positive.")
     run_name = run_name or f"gan_{epochs}epoch"
@@ -358,10 +359,9 @@ def train_gan_pipeline(epochs=200, batch_size=64, n_synth_per_class=None,
     n_class0 = int((y_gan == 0).sum())
     n_class1 = int((y_gan == 1).sum())
     if n_synth_per_class is None:
-        n_synth_per_class = {
-            0: int(round(n_class0 * augmentation_fraction)),
-            1: int(round(n_class1 * augmentation_fraction)),
-        }
+        n_synth_per_class = augmentation_counts_by_class(
+            y_gan, augmentation_fraction
+        )
         print(
             f"Augmentation fraction={augmentation_fraction:.2f}: generating "
             f"class0={n_synth_per_class[0]}, class1={n_synth_per_class[1]}."
@@ -499,9 +499,26 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=config.RANDOM_SEED)
-    parser.add_argument("--augmentation_fraction", type=float, default=DEFAULT_AUGMENTATION_FRACTION)
-    parser.add_argument("--quality_samples_per_class", type=int, default=QUALITY_SAMPLES_PER_CLASS)
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--augmentation_fraction",
+        type=float,
+        default=DEFAULT_AUGMENTATION_FRACTION,
+        help=(
+            "Extra synthetic windows per class as a fraction of that class's "
+            "real inner-training windows (default: 0.25)."
+        ),
+    )
+    parser.add_argument(
+        "--quality_samples_per_class",
+        type=int,
+        default=QUALITY_SAMPLES_PER_CLASS,
+        help="Independent synthetic samples per class used only for quality checks.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace artifacts for an existing run name.",
+    )
     args = parser.parse_args()
 
     train_gan_pipeline(epochs=args.epochs, batch_size=args.batch_size,

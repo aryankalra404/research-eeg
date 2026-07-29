@@ -1,12 +1,21 @@
 import unittest
+from pathlib import Path
+import tempfile
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 from src import config
-from src.augmentation import generate_simple_augmentation
-from src.models import MODEL_REGISTRY, get_model
+from src.augmentation import augmentation_counts_by_class, generate_simple_augmentation
+from src.models import (
+    ACTIVE_MODEL_NAMES,
+    MODEL_REGISTRY,
+    OPTIONAL_MODEL_NAMES,
+    STFTSpectrogram,
+    get_model,
+    model_metadata,
+)
 from src.evaluation import (
     evaluate_predictions,
     holm_adjust_p_values,
@@ -14,8 +23,10 @@ from src.evaluation import (
     paired_subject_cluster_test,
 )
 from src.preprocessing import zscore_normalize_per_window
+from src.reporting import summarize_fold_metrics
 from src.split import inner_group_split_indices
 from src.synthetic_quality import evaluate_synthetic_quality
+from src.compare_gan_augmentation import _load_fold_gan_cache, _save_fold_gan_cache
 from src.train_gan import ADAM_BETAS
 from src.reproducibility import set_seed
 
@@ -49,6 +60,70 @@ class ResearchProtocolTests(unittest.TestCase):
                         parameter.grad is None or torch.isfinite(parameter.grad).all()
                         for parameter in model.parameters()
                     )
+                )
+
+    def test_default_and_optional_model_sets_are_disjoint_and_registered(self):
+        self.assertEqual(
+            ACTIVE_MODEL_NAMES,
+            ("1dcnn", "rnn", "lstm", "bilstm", "gru", "gnn", "vit", "swin"),
+        )
+        self.assertTrue(set(ACTIVE_MODEL_NAMES).isdisjoint(OPTIONAL_MODEL_NAMES))
+        self.assertTrue(
+            set(ACTIVE_MODEL_NAMES + OPTIONAL_MODEL_NAMES).issubset(MODEL_REGISTRY)
+        )
+
+    def test_lstm_and_bilstm_have_correct_directionality(self):
+        self.assertFalse(get_model("lstm", 14, 512).lstm.bidirectional)
+        self.assertTrue(get_model("bilstm", 14, 512).lstm.bidirectional)
+
+    def test_stft_transform_is_finite_and_has_expected_shape(self):
+        spectrogram = STFTSpectrogram()(torch.randn(2, 512, 14))
+        self.assertEqual(tuple(spectrogram.shape), (2, 14, 23, 33))
+        self.assertTrue(torch.isfinite(spectrogram).all())
+        self.assertEqual(model_metadata("vit")["input_representation"], "internal_log_magnitude_stft")
+
+    def test_training_validation_and_test_loss_fields_are_summarized(self):
+        fold = {
+            "accuracy": 0.75,
+            "selected_train_accuracy": 0.9,
+            "selected_train_loss": 0.2,
+            "selected_inner_val_accuracy": 0.8,
+            "selected_inner_val_loss": 0.3,
+            "holdout_loss": 0.4,
+            "subject_condition_level": {},
+        }
+        summary = summarize_fold_metrics([fold])
+        self.assertEqual(summary["selected_train_accuracy"]["mean"], 0.9)
+        self.assertEqual(summary["selected_inner_val_loss"]["mean"], 0.3)
+        self.assertEqual(summary["accuracy"]["mean"], 0.75)
+        self.assertEqual(summary["holdout_loss"]["mean"], 0.4)
+
+    def test_fold_gan_cache_validates_protocol_metadata(self):
+        arrays = (
+            np.zeros((2, 8, 3), dtype=np.float32),
+            np.array([0, 1], dtype=np.int64),
+            np.ones((2, 8, 3), dtype=np.float32),
+            np.array([0, 1], dtype=np.int64),
+        )
+        metadata = {
+            "dataset": "stew",
+            "fold": 1,
+            "gan_seed": 10042,
+            "training_history": {"critic_loss": [1.0]},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fold_1.npz"
+            _save_fold_gan_cache(path, *arrays, metadata)
+            loaded = _load_fold_gan_cache(
+                path,
+                {"dataset": "stew", "fold": 1, "gan_seed": 10042},
+            )
+            np.testing.assert_array_equal(loaded[0], arrays[0])
+            self.assertEqual(loaded[-1], metadata["training_history"])
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                _load_fold_gan_cache(
+                    path,
+                    {"dataset": "stew", "fold": 2, "gan_seed": 10042},
                 )
 
     def test_quality_report_is_zero_for_identical_data(self):
@@ -132,6 +207,24 @@ class ResearchProtocolTests(unittest.TestCase):
         np.testing.assert_array_equal(first_y, np.array([0, 0, 0, 1, 1]))
         np.testing.assert_allclose(first_x, second_x)
         np.testing.assert_array_equal(first_y, second_y)
+
+    def test_augmentation_fraction_increases_both_classes_proportionally(self):
+        y = np.array([0] * 100 + [1] * 96)
+        self.assertEqual(
+            augmentation_counts_by_class(y, 0.25),
+            {0: 25, 1: 24},
+        )
+
+    def test_augmentation_fraction_rejects_missing_class(self):
+        with self.assertRaisesRegex(ValueError, "class 1"):
+            augmentation_counts_by_class(np.zeros(10, dtype=np.int64), 0.25)
+
+    def test_augmentation_fraction_rejects_invalid_value(self):
+        y = np.array([0, 1])
+        for fraction in (-0.1, np.inf, np.nan):
+            with self.subTest(fraction=fraction):
+                with self.assertRaises(ValueError):
+                    augmentation_counts_by_class(y, fraction)
 
     def test_reference_wgan_gp_adam_betas(self):
         self.assertEqual(ADAM_BETAS, (0.0, 0.9))

@@ -8,9 +8,9 @@ comparable to the Phase 5 augmented-training run later (same folds must
 be reused -- see note at bottom).
 
 Usage:
-    python -m src.train_baseline --dataset stew
-    python -m src.train_baseline --dataset stew --model eegnet_adapted
-    python -m src.train_baseline --dataset stew --epochs 5
+    python3 -m src.train_baseline --dataset stew
+    python3 -m src.train_baseline --dataset stew --model gru
+    python3 -m src.train_baseline --dataset stew --epochs 5
 """
 
 import argparse
@@ -28,7 +28,7 @@ from . import config
 from .datasets import EEGWindowDataset
 from .evaluation import evaluate_predictions
 from .labeling import build_dataset
-from .models import MODEL_REGISTRY, get_model
+from .models import ACTIVE_MODEL_NAMES, get_model, model_metadata
 from .preprocessing import load_processed
 from .provenance import build_provenance, write_json
 from .reporting import (
@@ -71,6 +71,25 @@ def _synchronize_device(device) -> None:
         torch.mps.synchronize()
 
 
+def _evaluate_loss_accuracy(model, loader, criterion, device) -> dict[str, float]:
+    model.eval()
+    loss_sum = 0.0
+    correct = 0
+    n_examples = 0
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            batch_size = int(yb.shape[0])
+            loss_sum += float(criterion(logits, yb).item()) * batch_size
+            correct += int((logits.argmax(dim=1) == yb).sum().item())
+            n_examples += batch_size
+    return {
+        "loss": loss_sum / max(1, n_examples),
+        "accuracy": correct / max(1, n_examples),
+    }
+
+
 def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y_inner_val,
                     X_holdout, y_holdout, groups_holdout, device, epochs: int,
                     batch_size: int = 64, lr: float = 1e-3,
@@ -98,6 +117,11 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
         shuffle=True,
         generator=loader_generator,
     )
+    train_eval_loader = DataLoader(
+        EEGWindowDataset(X_inner_train, y_inner_train),
+        batch_size=batch_size,
+        shuffle=False,
+    )
     has_inner_val = X_inner_val is not None
     if has_inner_val:
         inner_val_loader = DataLoader(EEGWindowDataset(X_inner_val, y_inner_val),
@@ -113,17 +137,28 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
         [len(y_inner_train) / (2 * c) if c > 0 else 0.0 for c in class_counts], dtype=torch.float32
     ).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
+    reporting_criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
 
     best_val_f1 = -1.0
     best_state = None
     best_epoch = epochs
-    training_history = {"train_loss": [], "inner_val_f1_macro": []}
+    training_history = {
+        "optimization_train_loss": [],
+        "train_loss": [],
+        "train_accuracy": [],
+        "inner_val_loss": [],
+        "inner_val_accuracy": [],
+        "inner_val_f1_macro": [],
+    }
 
     training_started = time.perf_counter()
     for epoch in range(epochs):
         model.train()
-        epoch_losses = []
+        epoch_optimization_losses = []
+        epoch_reporting_loss_sum = 0.0
+        epoch_correct = 0
+        epoch_examples = 0
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
@@ -131,26 +166,51 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
             loss = criterion(logits, yb)
             loss.backward()
             optimizer.step()
-            epoch_losses.append(float(loss.item()))
-        training_history["train_loss"].append(float(np.mean(epoch_losses)))
+            epoch_optimization_losses.append(float(loss.item()))
+            epoch_reporting_loss_sum += (
+                float(reporting_criterion(logits.detach(), yb).item()) * len(yb)
+            )
+            epoch_correct += int((logits.argmax(dim=1) == yb).sum().item())
+            epoch_examples += int(yb.shape[0])
+        training_history["optimization_train_loss"].append(
+            float(np.mean(epoch_optimization_losses))
+        )
+        training_history["train_loss"].append(
+            float(epoch_reporting_loss_sum / max(1, epoch_examples))
+        )
+        training_history["train_accuracy"].append(
+            float(epoch_correct / max(1, epoch_examples))
+        )
 
         if has_inner_val:
             model.eval()
             val_preds, val_true = [], []
+            val_loss_sum = 0.0
             with torch.no_grad():
                 for xb, yb in inner_val_loader:
-                    xb = xb.to(device)
+                    xb, yb_device = xb.to(device), yb.to(device)
                     logits = model(xb)
+                    val_loss_sum += (
+                        float(reporting_criterion(logits, yb_device).item()) * len(yb)
+                    )
                     preds = logits.argmax(dim=1).cpu().numpy()
                     val_preds.extend(preds)
                     val_true.extend(yb.numpy())
             val_f1 = f1_score(val_true, val_preds, average="macro", zero_division=0)
+            training_history["inner_val_loss"].append(
+                float(val_loss_sum / max(1, len(val_true)))
+            )
+            training_history["inner_val_accuracy"].append(
+                float(np.mean(np.asarray(val_preds) == np.asarray(val_true)))
+            )
             training_history["inner_val_f1_macro"].append(float(val_f1))
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
                 best_epoch = epoch + 1
                 best_state = {k: v.clone() for k, v in model.state_dict().items()}
         else:
+            training_history["inner_val_loss"].append(None)
+            training_history["inner_val_accuracy"].append(None)
             training_history["inner_val_f1_macro"].append(None)
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
 
@@ -159,16 +219,29 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
     _synchronize_device(device)
     training_seconds = time.perf_counter() - training_started
 
+    selected_train = _evaluate_loss_accuracy(
+        model, train_eval_loader, reporting_criterion, device
+    )
+    selected_inner_val = (
+        _evaluate_loss_accuracy(model, inner_val_loader, reporting_criterion, device)
+        if has_inner_val
+        else {"loss": None, "accuracy": None}
+    )
+
     # Final metrics computed on the holdout set EXACTLY ONCE, after checkpoint
     # selection is already locked in.
     model.eval()
     holdout_probabilities, holdout_true = [], []
+    holdout_loss_sum = 0.0
     _synchronize_device(device)
     inference_started = time.perf_counter()
     with torch.no_grad():
         for xb, yb in holdout_loader:
-            xb = xb.to(device)
+            xb, yb_device = xb.to(device), yb.to(device)
             logits = model(xb)
+            holdout_loss_sum += (
+                float(reporting_criterion(logits, yb_device).item()) * len(yb)
+            )
             probabilities = torch.softmax(logits, dim=1).cpu().numpy()
             holdout_probabilities.extend(probabilities)
             holdout_true.extend(yb.numpy())
@@ -185,6 +258,21 @@ def train_one_fold(model_name: str, X_inner_train, y_inner_train, X_inner_val, y
     metrics["subject_condition_level"] = evaluation["subject_condition_level"]
     metrics["selected_epoch"] = int(best_epoch)
     metrics["training_history"] = training_history
+    metrics["selected_train_loss"] = float(selected_train["loss"])
+    metrics["selected_train_accuracy"] = float(selected_train["accuracy"])
+    metrics["selected_inner_val_loss"] = (
+        float(selected_inner_val["loss"])
+        if selected_inner_val["loss"] is not None
+        else None
+    )
+    metrics["selected_inner_val_accuracy"] = (
+        float(selected_inner_val["accuracy"])
+        if selected_inner_val["accuracy"] is not None
+        else None
+    )
+    metrics["holdout_loss"] = float(
+        holdout_loss_sum / max(1, len(holdout_true))
+    )
     metrics["parameter_count"] = int(sum(parameter.numel() for parameter in model.parameters()))
     metrics["trainable_parameter_count"] = int(
         sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
@@ -324,6 +412,7 @@ def run_all(model_names, epochs: int, n_folds: int = config.N_FOLDS, batch_size:
             "run_name": model_run_name,
             "dataset": dataset,
             "model": model_name,
+            "model_metadata": model_metadata(model_name),
             "epochs": epochs,
             "batch_size": batch_size,
             "learning_rate": 1e-3,
@@ -401,8 +490,15 @@ def print_summary_table(results: dict):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default=config.DEFAULT_DATASET, choices=config.SUPPORTED_DATASETS)
-    parser.add_argument("--model", type=str, default=None,
-                         help="Run one model (e.g. eegnet_adapted). Default: all 6.")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Run one registered model. Default: active suite "
+            f"({', '.join(ACTIVE_MODEL_NAMES)})."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--folds", type=int, default=config.N_FOLDS)
     parser.add_argument("--batch_size", type=int, default=64)
@@ -411,7 +507,7 @@ if __name__ == "__main__":
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    model_names = [args.model] if args.model else list(MODEL_REGISTRY.keys())
+    model_names = [args.model] if args.model else list(ACTIVE_MODEL_NAMES)
 
     results = run_all(model_names, epochs=args.epochs, n_folds=args.folds,
                       batch_size=args.batch_size, dataset=args.dataset, seed=args.seed,
