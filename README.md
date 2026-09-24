@@ -46,6 +46,10 @@ Results land in `outputs/stew/<experiment>/report/` (`REPORT.md`, `tables/*.{csv
 Without Docker: install PyTorch, then `pip install -r requirements.txt && pip install -e .`
 and use `python -m stewbench <command>`.
 
+See `docs/NVIDIA_NGC_GUIDE.md` for the full workstation walkthrough and
+`docs/RESEARCH_DESIGN.md` for research questions, the GAN rationale,
+pitfalls, the paper checklist and references.
+
 ## Configs
 
 | File | Purpose |
