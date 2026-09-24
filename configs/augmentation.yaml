@@ -1,0 +1,62 @@
+# Augmentation study (RQ2/RQ3): does augmentation -- conventional transforms,
+# CWGAN-GP or a conditional DDPM -- improve cross-subject decoding, and does
+# the benefit grow when fewer training subjects are available?
+#
+# Generators are trained INSIDE each fold on inner-training subjects only.
+# Pick the classifiers BEFORE looking at test results (e.g. one compact CNN,
+# one deep CNN, one transformer). Runtime: many GPU-hours; it is resumable.
+name: augmentation_study
+seeds: [0, 1, 2]
+models: [eegnet, shallowconvnet, eeg_conformer]
+
+# Nested training-subject budgets per fold (null = all ~36 available).
+train_subject_budgets: [6, 12, 24, null]
+
+augmentations:
+  - {method: none}
+  - {method: gaussian_noise,   probability: 0.5, magnitude: 0.5}
+  - {method: smooth_time_mask, probability: 0.5, magnitude: 0.5}
+  - {method: channel_dropout,  probability: 0.5, magnitude: 0.5}
+  - {method: ft_surrogate,     probability: 0.5, magnitude: 0.5}
+  - {method: frequency_shift,  probability: 0.5, magnitude: 0.5}
+  - {method: sign_flip,        probability: 0.5, magnitude: 0.5}
+  - {method: time_reverse,     probability: 0.5, magnitude: 0.5}
+  - {method: mixup,            probability: 0.5, magnitude: 0.4}
+  - {method: cwgan_gp, synthetic_fraction: 0.5, generator_epochs: 300, generator_batch_size: 64}
+  - {method: cwgan_gp, synthetic_fraction: 1.0, generator_epochs: 300, generator_batch_size: 64}
+  - {method: ddpm,     synthetic_fraction: 0.5, generator_epochs: 300, generator_batch_size: 64}
+  - {method: ddpm,     synthetic_fraction: 1.0, generator_epochs: 300, generator_batch_size: 64}
+
+preprocess:
+  bandpass_hz: [0.5, 45.0]
+  filter_order: 4
+  window_seconds: 4.0
+  window_overlap: 0.5
+  trim_seconds: 0.0
+  artifact_mad_k: 60.0
+
+protocol:
+  scheme: group_kfold
+  n_folds: 10
+  fold_seed: 2024
+  inner_val_fraction: 0.15
+
+input:
+  normalization: window_zscore
+  alignment: none
+
+training:
+  max_epochs: 100
+  patience: 15
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 3
+  grad_clip_norm: 1.0
+  monitor: val_loss
+  amp: true
+  deterministic: true
+
+interpretability: false

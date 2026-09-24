@@ -1,0 +1,50 @@
+# Ablation: Euclidean Alignment (He & Wu, 2020) of every subject's windows.
+# TRANSDUCTIVE: uses unlabelled windows of the test subject. Report separately.
+name: ablation_euclidean_alignment
+seeds:
+- 0
+- 1
+- 2
+- 3
+- 4
+models:
+- eegnet
+- shallowconvnet
+- eegtcnet
+- eeg_conformer
+- atcnet
+- tsception
+preprocess:
+  bandpass_hz:
+  - 0.5
+  - 45.0
+  filter_order: 4
+  window_seconds: 4.0
+  window_overlap: 0.5
+  trim_seconds: 0.0
+  artifact_mad_k: 60.0
+protocol:
+  scheme: group_kfold
+  n_folds: 10
+  fold_seed: 2024
+  inner_val_fraction: 0.15
+input:
+  normalization: window_zscore
+  alignment: euclidean
+training:
+  max_epochs: 100
+  patience: 15
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 3
+  label_smoothing: 0.0
+  grad_clip_norm: 1.0
+  monitor: val_loss
+  amp: true
+  deterministic: true
+tune_classical: true
+interpretability: true
+save_checkpoints: false

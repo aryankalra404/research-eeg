@@ -1,0 +1,65 @@
+# Fast sanity run on the REAL data (1 seed, 5 folds, short training).
+# Use it to check the setup before launching benchmark.yaml. Not for the paper.
+name: benchmark_quick
+seeds:
+- 0
+models:
+- bp_lda
+- bp_lr
+- bp_svm
+- bp_rf
+- bp_gbdt
+- riemann_mdm
+- riemann_ts_lr
+- riemann_rpa_ts_lr
+- cnn1d
+- rnn
+- lstm
+- bilstm
+- gru
+- cnn_lstm
+- eegnet
+- shallowconvnet
+- deepconvnet
+- eegtcnet
+- tsception
+- eeg_conformer
+- atcnet
+- vit_stft
+- swin_stft
+- gcn
+- dgcnn
+preprocess:
+  bandpass_hz:
+  - 0.5
+  - 45.0
+  filter_order: 4
+  window_seconds: 4.0
+  window_overlap: 0.5
+  trim_seconds: 0.0
+  artifact_mad_k: 60.0
+protocol:
+  scheme: group_kfold
+  n_folds: 5
+  fold_seed: 2024
+  inner_val_fraction: 0.15
+input:
+  normalization: window_zscore
+  alignment: none
+training:
+  max_epochs: 30
+  patience: 8
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 3
+  label_smoothing: 0.0
+  grad_clip_norm: 1.0
+  monitor: val_loss
+  amp: true
+  deterministic: true
+tune_classical: true
+interpretability: false
+save_checkpoints: false

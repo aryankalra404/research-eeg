@@ -1,0 +1,74 @@
+# Main benchmark reported in the paper.
+# 25 models x 5 seeds x 10 subject-independent folds (identical folds for every model).
+# Runtime on one modern GPU: roughly 8-14 h. The run is resumable: rerun the
+# same command and finished (model, seed) pairs are skipped.
+name: benchmark_main
+seeds: [0, 1, 2, 3, 4]
+
+models:
+  # classical
+  - bp_lda
+  - bp_lr
+  - bp_svm
+  - bp_rf
+  - bp_gbdt
+  - riemann_mdm
+  - riemann_ts_lr
+  - riemann_rpa_ts_lr      # transductive (re-centres each test subject); reported with a dagger
+  # generic deep
+  - cnn1d
+  - rnn
+  - lstm
+  - bilstm
+  - gru
+  - cnn_lstm
+  # EEG-specific deep
+  - eegnet
+  - shallowconvnet
+  - deepconvnet
+  - eegtcnet
+  - tsception
+  - eeg_conformer
+  - atcnet
+  # transformers on spectrograms / graphs
+  - vit_stft
+  - swin_stft
+  - gcn
+  - dgcnn
+
+preprocess:
+  bandpass_hz: [0.5, 45.0]
+  filter_order: 4
+  window_seconds: 4.0
+  window_overlap: 0.5
+  trim_seconds: 0.0
+  artifact_mad_k: 60.0
+
+protocol:
+  scheme: group_kfold        # or "loso" (see benchmark_loso.yaml)
+  n_folds: 10
+  fold_seed: 2024
+  inner_val_fraction: 0.15   # subject-disjoint early-stopping pool inside each fold
+
+input:
+  normalization: window_zscore
+  alignment: none
+
+training:                    # identical for every deep model, no per-model tuning
+  max_epochs: 100
+  patience: 15
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 3
+  label_smoothing: 0.0
+  grad_clip_norm: 1.0
+  monitor: val_loss
+  amp: true
+  deterministic: true
+
+tune_classical: true
+interpretability: true
+save_checkpoints: false

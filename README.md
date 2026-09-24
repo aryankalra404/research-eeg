@@ -1,654 +1,83 @@
-# EEG Workload and Stress Research Pipeline
+# stewbench — subject-independent EEG workload benchmark on STEW
 
-This repository is a code-first research pipeline for EEG classification.
-It is organized to support multiple datasets, GAN-based augmentation, and
-comparisons across existing neural network classifiers.
+Rest vs. SIMKAP-multitasking (low vs. high mental workload) classification on
+the STEW dataset (Lim, Sourina & Wang, IEEE TNSRE 2018; 48 subjects, Emotiv
+EPOC, 14 channels, 128 Hz), with:
 
-Current implementations: DREAMER and STEW.
-Planned datasets: IUB, DASPS.
+- **25 baselines** on identical subject-independent folds — 8 classical
+  (spectral features + sLDA / LR / SVM / RF / GBDT; Riemannian MDM, tangent-space
+  LR, re-centred tangent-space LR) and 17 deep (1D-CNN, RNN, LSTM, BiLSTM, GRU,
+  CNN-LSTM, EEGNet, ShallowConvNet, DeepConvNet, EEG-TCNet, TSception,
+  EEG Conformer, ATCNet, ViT-STFT, Swin-STFT, electrode GCN, DGCNN).
+- **Leakage-safe protocol**: whole subjects per fold, subject-disjoint inner
+  validation for early stopping/tuning, test subjects touched once.
+- **Metrics**: accuracy, balanced accuracy, macro-F1, sensitivity, specificity,
+  Cohen's κ, MCC, ROC-AUC, PR-AUC, Brier, log-loss, ECE; window, recording and
+  per-subject levels; subject-cluster bootstrap 95% CIs; parameters, FLOPs,
+  latency.
+- **Statistics**: Friedman + Iman–Davenport, Nemenyi critical-difference
+  diagram, pairwise Wilcoxon signed-rank with Holm correction and rank-biserial
+  effect sizes.
+- **Augmentation study**: 8 standard EEG augmentations vs. CWGAN-GP vs.
+  conditional DDPM, trained inside each fold, across training-subject budgets
+  (data-efficiency curve), with synthetic-data quality metrics.
+- **Neurophysiology check**: task-vs-rest band-power topomaps (paired t, FDR).
+- **Interpretability**: channel-permutation and band-removal importance.
 
-Main experiment idea:
-
-```text
-raw EEG dataset
-  -> preprocessing
-  -> subject-independent split
-  -> baseline classifiers without GAN
-  -> CWGAN-GP synthetic EEG generation
-  -> classifiers with GAN augmentation
-  -> comparison tables/plots for research writeup
-```
-
-The active classifier suite includes 1D-CNN, vanilla RNN, unidirectional LSTM,
-BiLSTM, GRU, an electrode-graph GNN, and STFT-based ViT and Swin adaptations.
-TemporalCNN and explicitly named EEGNet/DeepConvNet/ShallowConvNet adaptations
-remain available for later experiments but are excluded from default runs. The
-literature-derived networks are not presented as exact reproductions.
-
-## Current Status
-
-STEW is the active/default dataset. It has raw loading, condition-based labels,
-leakage-free window normalization, STEW-calibrated artifact rejection,
-subject-independent splitting, eight active baseline classifiers, strict CWGAN-GP
-isolation, deterministic seeds, run manifests, and synthetic-quality metrics.
-
-For STEW, the target is workload condition, not clinical stress:
-
-```text
-class 0 = rest / low workload
-class 1 = SIMKAP multitasking / high workload
-```
-
-The GAN trains only on inner-training subjects. Classifier-validation and final
-test subjects are excluded from GAN training. Saved synthetic files include the
-dataset, seed, and all three subject lists; mismatched files are rejected.
-
-The current local DREAMER setup has been checked with:
+## Quick start (NVIDIA workstation, NGC container)
 
 ```bash
-python3 scripts/check_setup.py --dataset dreamer
+git clone <this repo> && cd research-eeg
+# 1. Put STEW files in data/raw/stew/  (sub01_lo.txt ... sub48_hi.txt, ratings.txt)
+# 2. Check your driver with nvidia-smi; default image needs driver >= 570
+NGC_TAG=25.01-py3 docker/run.sh build
+docker/run.sh check                  # GPU + dataset check
+docker/run.sh smoke                  # whole pipeline on a tiny synthetic fixture
+docker/run.sh benchmark --config configs/benchmark_quick.yaml   # ~fast sanity run on real data
+DETACH=1 docker/run.sh benchmark --config configs/benchmark.yaml  # full paper run (resumable)
+docker logs -f stewbench
+DETACH=1 docker/run.sh augment --config configs/augmentation.yaml
+docker/run.sh neuro --config configs/benchmark.yaml
 ```
 
-Expected status:
-
-```text
-raw files: OK, 2 files
-processed subjects: OK, 23 subject files
-split: OK
-synthetic GAN data: OK, 2 files
-model checkpoints: OK, 4 .pt files
-outputs: OK, 7 files
-runs directory: OK
-```
-
-Known existing DREAMER artifacts:
-
-```text
-data/raw/dreamer/DREAMER.mat
-data/raw/dreamer/DREAMER.pdf
-
-data/processed/dreamer/subject_01.npz ... subject_23.npz
-data/processed/dreamer/split.json
-data/processed/dreamer/synthetic_train_gan_400epoch.npz
-data/processed/dreamer/synthetic_train_gan_200epoch_backup.npz
-
-models/dreamer/gan_400epoch/cwgan_gp_generator.pt
-models/dreamer/gan_400epoch/cwgan_gp_critic.pt
-models/dreamer/gan_200epoch_backup/cwgan_gp_generator.pt
-models/dreamer/gan_200epoch_backup/cwgan_gp_critic.pt
-
-outputs/dreamer/baseline_results.json
-outputs/dreamer/gan_400epoch/gan_training_loss.png
-outputs/dreamer/gan_400epoch/gan_waveform_check.png
-outputs/dreamer/gan_400epoch/gan_tsne_check.png
-outputs/dreamer/gan_200epoch_backup/gan_training_loss.png
-outputs/dreamer/gan_200epoch_backup/gan_waveform_check.png
-outputs/dreamer/gan_200epoch_backup/gan_tsne_check.png
-```
-
-The current `gan_400epoch` synthetic data file contains synthetic DREAMER
-training windows generated by the CWGAN-GP run:
-
-```text
-data/processed/dreamer/synthetic_train_gan_400epoch.npz
-```
-
-## Repository Layout
-
-```text
-research-ml-eeg/
-  README.md
-  requirements.txt
-  requirements-lock.txt
-  .gitignore
-
-  data/
-    raw/
-      dreamer/
-      stew/
-      iub/
-      dasps/
-    processed/
-      dreamer/
-      stew/
-      iub/
-      dasps/
-
-  models/
-    dreamer/
-    stew/
-    iub/
-    dasps/
-
-  outputs/
-    dreamer/
-    stew/
-    iub/
-    dasps/
-
-  runs/
-    dreamer/
-    stew/
-    iub/
-    dasps/
-
-  src/
-  scripts/
-  docs/
-  notebooks/
-```
-
-## What Each Folder Is For
-
-`data/raw/`
-
-Raw, untouched dataset files. These are the original source files downloaded
-from dataset providers. Do not edit these manually. Each dataset gets its own
-folder.
-
-Example:
-
-```text
-data/raw/dreamer/DREAMER.mat
-```
-
-`data/processed/`
-
-Preprocessed dataset files used by training scripts. These are generated from
-`data/raw/` by preprocessing code. They can be deleted and regenerated if the
-preprocessing settings change.
-
-For DREAMER, this contains:
-
-```text
-subject_*.npz
-split.json
-synthetic_train_<gan_run>.npz
-```
-
-`models/`
-
-Saved model checkpoints, separated by dataset and run name. GAN generator and
-critic checkpoints live here, along with future classifier checkpoints.
-
-Example:
-
-```text
-models/dreamer/gan_400epoch/cwgan_gp_generator.pt
-models/dreamer/gan_400epoch/cwgan_gp_critic.pt
-```
-
-`outputs/`
-
-Research outputs: metric JSON files, plots, validation figures, confusion
-matrices, and anything likely to go into a paper or presentation.
-
-Example:
-
-```text
-outputs/dreamer/gan_400epoch/gan_training_loss.png
-outputs/dreamer/gan_400epoch/gan_tsne_check.png
-outputs/dreamer/baseline_results.json
-```
-
-`runs/`
-
-Tracked experiment manifests and histories. Manifests include model settings,
-subject assignments, metrics, Git revision/dirty state, runtime versions, raw
-dataset checksum, split checksum, and preprocessing configuration.
-
-Example:
-
-```text
-runs/dreamer/gan_400epoch/manifest.json
-```
-
-`src/`
-
-All real pipeline code. This is the importable Python package for data loading,
-preprocessing, labeling, splitting, GAN training, classifier training, and
-comparison logic.
-
-Important files:
-
-```text
-src/config.py
-src/data_loader.py
-src/preprocessing.py
-src/labeling.py
-src/split.py
-src/gan.py
-src/train_gan.py
-src/train_baseline.py
-src/train_baseline_single.py
-src/compare_gan_augmentation.py
-src/models.py
-```
-
-`scripts/`
-
-Small helper scripts that are not core model code.
-
-Current helper:
-
-```text
-scripts/check_setup.py
-```
-
-`docs/`
-
-Research workflow notes and longer documentation.
-
-Current doc:
-
-```text
-docs/research_workflow.md
-```
-
-`notebooks/`
-
-Exploration only. Use notebooks for EDA, one-off plots, debugging, and visual
-inspection. If notebook logic becomes required for the pipeline, move it into
-`src/`.
-
-## What `.gitkeep` Means
-
-Git does not track empty folders. A `.gitkeep` file is a tiny placeholder that
-forces Git to preserve an otherwise empty folder.
-
-Example: `data/raw/stew/.gitkeep` means the STEW raw-data folder exists in Git
-even before the actual STEW dataset files are added locally.
-
-`.gitkeep` has no effect on Python code, training, data loading, or results. It
-is only there so teammates and AI agents can see the intended folder structure
-after cloning the repo.
-
-## Git And Artifact Policy
-
-This repo should keep code and lightweight docs in Git.
-
-Large research artifacts are ignored by Git:
-
-```text
-data/raw/*
-data/processed/*
-models/**/*.pt
-models/**/*.pth
-outputs/**/*.png
-outputs/**/*.json
-runs/**/*.json
-runs/**/*.log
-```
-
-Share these files outside normal Git using Google Drive, OneDrive, Dropbox,
-GitHub Releases, Hugging Face, or institutional storage.
-
-When sending results to the team, include:
-
-```text
-data/processed/<dataset>/synthetic_train_<run>.npz
-models/<dataset>/<run>/
-outputs/<dataset>/<run>/
-runs/<dataset>/<run>/manifest.json
-```
-
-Do not commit raw datasets, `.npz` processed data, or `.pt` model checkpoints to
-regular Git unless the team explicitly decides to use Git LFS.
-
-## Setup
-
-Install dependencies:
+Results land in `outputs/stew/<experiment>/report/` (`REPORT.md`, `tables/*.{csv,tex,md}`,
+`figures/*.{pdf,png}`). Interrupted runs resume where they stopped.
+
+Without Docker: install PyTorch, then `pip install -r requirements.txt && pip install -e .`
+and use `python -m stewbench <command>`.
+
+## Configs
+
+| File | Purpose |
+|---|---|
+| `configs/benchmark.yaml` | main benchmark: 25 models × 5 seeds × 10 subject folds |
+| `configs/benchmark_quick.yaml` | 1 seed, 5 folds, short training — setup check only |
+| `configs/benchmark_loso.yaml` | leave-one-subject-out, for comparison with published STEW numbers |
+| `configs/ablation_euclidean_alignment.yaml` | transductive Euclidean Alignment ablation |
+| `configs/ablation_window_2s.yaml` | 2 s windows |
+| `configs/augmentation.yaml` | augmentation × generator × training-subject budget study |
+
+## Protocol notes
+
+- Band-pass 0.5–45 Hz (zero-phase Butterworth), 4 s windows, 50% overlap,
+  class-agnostic per-subject MAD artifact rejection, per-window z-scoring.
+- Per-recording normalization is deliberately not offered: each STEW recording
+  is one class, so recording statistics would encode the label.
+- Methods marked **transductive** (re-centred Riemannian, Euclidean Alignment)
+  use unlabelled test-subject data and are reported separately.
+- Identical training recipe for all deep models (AdamW, warm-up + cosine,
+  early stopping on inner-validation loss); no tuning on test data.
+- Kernel lengths of CNNs designed for 250 Hz are rescaled to 128 Hz.
+
+## Status
+
+The code has been exercised end to end on a synthetic fixture only; no STEW
+results have been produced yet. Numbers from `smoke` or fixture runs are
+labelled as such and must never be reported.
+
+## Tests
 
 ```bash
-pip install -r requirements.txt
-```
-
-On some systems, use:
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-To recreate the exact verified environment instead of installing compatible
-version ranges:
-
-```bash
-python3 -m pip install -r requirements-lock.txt
-```
-
-## STEW Commands
-
-Run the protocol tests:
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Audit and preprocess STEW:
-
-```bash
-python3 scripts/check_setup.py --dataset stew
-python3 -m src.diagnose_artifacts --dataset stew
-python3 -m src.preprocessing --dataset stew
-python3 -m src.split --dataset stew
-python3 -m src.labeling --dataset stew
-```
-
-Run all eight active real-data baselines with subject-independent
-cross-validation:
-
-```bash
-python3 -m src.train_baseline --dataset stew --epochs 30 --folds 5 --seed 42
-```
-
-Train a fixed-split GAN. It uses only deterministic inner-training subjects:
-
-```bash
-python3 -m src.train_gan --dataset stew --run_name gan_400epoch_seed42_frac25 --epochs 400 --batch_size 64 --seed 42 --augmentation_fraction 0.25
-```
-
-Compare one classifier on the fixed split:
-
-```bash
-python3 -m src.train_baseline_single --dataset stew --model gru --epochs 30 --seed 42
-python3 -m src.train_baseline_single --dataset stew --model gru --use_gan --gan_run gan_400epoch_seed42_frac25 --epochs 30 --seed 42
-```
-
-Run the stricter per-fold comparison used for research reporting:
-
-```bash
-python3 -m src.compare_gan_augmentation --dataset stew --model gru --gan_epochs 400 --clf_epochs 30 --folds 5 --seed 42 --synth_fraction 0.25 --gan_cache_name stew_cv_gan_seed42_frac25 --include_simple_augmentation
-```
-
-Every fixed-split GAN run saves:
-
-```text
-runs/stew/<run>/manifest.json
-runs/stew/<run>/training_history.json
-outputs/stew/<run>/synthetic_quality.json
-```
-
-The quality report covers channel covariance, lag-1 autocorrelation,
-theta/alpha/beta/gamma band power, feature-space MMD, density/coverage,
-nearest-neighbor memorization diagnostics, and lightweight TRTR/TSTR utility.
-GAN runs also save real-vs-synthetic PSD and channel-correlation figures. These
-checks can expose mismatch but do not prove physiological validity; downstream
-held-out classification and multiple seeds are still required.
-
-The per-fold paper comparison saves a GAN, both classifier checkpoints, GAN
-history, balanced two-class quality diagnostics, full fold manifest, window-
-level metrics, subject-condition metrics, parameter counts, training/inference
-timing, subject-clustered bootstrap intervals, subject-wise randomization tests,
-Holm-adjusted p-values, exact fold sign-flip tests, and publication-ready CSV
-tables. With `--include_simple_augmentation`, it also compares a conventional
-noise/time-shift/channel-dropout control at the same fraction. Run predeclared
-augmentation fractions such as
-`0.10`, `0.25`, `0.50`, and `1.00`; do not choose the best fraction using final
-held-out results.
-
-For multiple-seed reporting, repeat the command with predeclared seeds such as
-`42`, `43`, `44`, `45`, and `46`, then report all seeds rather than selecting
-the best run.
-
-Baseline outputs include accuracy, balanced accuracy, macro precision/recall/F1,
-class-1 sensitivity, class-0 specificity, MCC, ROC-AUC, average precision,
-per-class precision/recall/F1/support, confusion matrices, 95% intervals,
-parameter count, training time, and inference milliseconds per window. The
-merged paper table is `outputs/stew/baseline_results_table.csv`; ROC,
-precision-recall, and confusion plots are under `outputs/stew/baseline_plots/`.
-Each strict GAN comparison writes `outputs/stew/<run>/comparison_table.csv`.
-
-## DREAMER Commands
-
-Check that DREAMER raw data loads:
-
-```bash
-python3 -m src.data_loader
-```
-
-Check processed labels and class balance:
-
-```bash
-python3 -m src.labeling --dataset dreamer
-```
-
-Audit the folder/artifact setup:
-
-```bash
-python3 scripts/check_setup.py --dataset dreamer
-```
-
-Preprocess DREAMER:
-
-```bash
-python3 -m src.preprocessing --dataset dreamer
-```
-
-Create the fixed subject-independent split:
-
-```bash
-python3 -m src.split --dataset dreamer
-```
-
-Train a DREAMER GAN:
-
-```bash
-python3 -m src.train_gan --dataset dreamer --run_name gan_400epoch --epochs 400 --batch_size 64
-```
-
-Train one classifier without GAN:
-
-```bash
-python3 -m src.train_baseline_single --dataset dreamer --model eegnet_adapted --epochs 30
-```
-
-Train one classifier with saved GAN data:
-
-```bash
-python3 -m src.train_baseline_single --dataset dreamer --model eegnet_adapted --use_gan --gan_run gan_400epoch --epochs 30
-```
-
-Run cross-validation baselines:
-
-```bash
-python3 -m src.train_baseline --dataset dreamer --model eegnet_adapted --epochs 30 --folds 5
-```
-
-Run the stricter per-fold GAN comparison for research reporting:
-
-```bash
-python3 -m src.compare_gan_augmentation --dataset dreamer --model eegnet_adapted --gan_epochs 200 --clf_epochs 30 --folds 5 --synth_fraction 0.25
-```
-
-## Recommended Experiment Naming
-
-Use descriptive run names so artifacts do not overwrite each other.
-
-Good examples:
-
-```text
-gan_400epoch
-gan_400epoch_seed42_frac25
-gan_200epoch_backup
-eegnet_adapted_30epoch_without_gan
-eegnet_adapted_30epoch_with_gan_400epoch
-```
-
-Avoid vague names like:
-
-```text
-test
-new
-final
-latest
-```
-
-## Pipeline Phases
-
-Phase 0: label definition and split protocol.
-
-Phase 1: preprocessing, including filtering, baseline correction, epoching,
-artifact rejection, and normalization.
-
-Phase 2: baseline classification on real data only.
-
-Phase 3: class imbalance checks.
-
-Phase 4: CWGAN-GP training and synthetic EEG generation.
-
-Phase 5: classifier training with GAN-augmented data.
-
-Phase 6: analysis, comparison tables, figures, and writeup.
-
-## Dataset Notes
-
-DREAMER:
-
-14-channel Emotiv EPOC EEG. Uses valence/arousal/dominance self-report. Current
-labeling uses a proxy stress definition: high arousal plus low valence.
-Source: https://zenodo.org/records/546113
-
-STEW:
-
-Raw files are present locally under:
-
-```text
-data/raw/stew/stew_dataset/
-```
-
-Source: IEEE DataPort, "STEW: Simultaneous Task EEG Workload Dataset",
-DOI `10.21227/44r8-ya50`.
-
-Dataset facts from the IEEE DataPort page:
-
-```text
-subjects: 48
-device: Emotiv EPOC
-sampling rate: 128 Hz
-channels: 14
-recording duration: 2.5 minutes per condition
-conditions:
-  lo = rest / low workload
-  hi = SIMKAP multitasking test / high workload
-file naming:
-  sub01_lo.txt = subject 1 at rest
-  sub01_hi.txt = subject 1 during multitasking test
-columns:
-  AF3, F7, F3, FC5, T7, P7, O1, O2, P8, T8, FC6, F4, F8, AF4
-ratings:
-  ratings.txt has subject number, rest rating, test rating
-missing ratings:
-  subjects 5, 24, and 42
-```
-
-Local file check:
-
-```text
-data/raw/stew/stew_dataset/ratings.txt
-data/raw/stew/stew_dataset/sub01_lo.txt ... sub48_lo.txt
-data/raw/stew/stew_dataset/sub01_hi.txt ... sub48_hi.txt
-```
-
-There are 96 subject-condition EEG files locally: 48 `_lo` files and 48 `_hi`
-files.
-
-Current STEW implementation:
-
-```text
-raw loader: implemented
-preprocessing: 0.5-45 Hz filtering, 4 s windows with 50% overlap,
-  training-subject-calibrated MAD artifact rejection at multiplier 60,
-  per-window/channel z-score
-labeling: implemented as condition labels, lo=0 and hi=1
-split: implemented via subject-independent split
-CWGAN-GP: strict inner-training isolation, seeded runs, protocol metadata,
-  manifests, loss history, and quantitative quality report implemented
-```
-
-Legacy smoke-test artifacts (created before strict metadata; do not use for results):
-
-```text
-data/processed/stew/synthetic_train_smoke.npz
-models/stew/smoke/cwgan_gp_generator.pt
-models/stew/smoke/cwgan_gp_critic.pt
-outputs/stew/smoke/gan_training_loss.png
-outputs/stew/smoke/gan_waveform_check.png
-outputs/stew/smoke/gan_tsne_check.png
-```
-
-For publication-quality STEW GAN results, use a named seed and repeat the full
-experiment across multiple seeds, for example:
-
-```bash
-python3 -m src.train_gan --dataset stew --run_name gan_400epoch_seed42_frac25 --epochs 400 --batch_size 64 --seed 42 --augmentation_fraction 0.25
-```
-
-IUB:
-
-Planned. Add source, channel layout, sampling rate, label definition, and loader
-details once raw data is available.
-
-DASPS:
-
-Planned. 14-channel Emotiv EPOC+ anxiety dataset using HAM-A labels. Loader not
-implemented yet.
-
-Important research limitation: DREAMER, STEW, IUB, and DASPS do not measure
-the exact same construct. DREAMER uses emotion-based stress proxy labels, STEW
-uses experimentally defined workload conditions, and DASPS is anxiety-labeled. This must be stated in
-the paper instead of treated as identical ground truth.
-
-## Adding A New Dataset
-
-For IUB or DASPS, first add a `DatasetSpec` and dataset-specific raw loader, then convert data into
-the same standardized processed format used by DREAMER.
-
-Target processed format:
-
-```text
-subject_XX.npz
-  windows: float32 array, shape (N, T, C)
-  trial_idx: integer array, shape (N,)
-  label fields required by that dataset labeler
-```
-
-Keep the split subject-independent whenever subject IDs are available.
-
-Never train the GAN on held-out test subjects. Synthetic data should only be
-generated from training subjects and only added to training partitions.
-
-## Notes For Future AI Agents
-
-Start by reading:
-
-```text
-README.md
-docs/research_workflow.md
-src/config.py
-scripts/check_setup.py
-```
-
-Before changing training logic, inspect:
-
-```text
-src/preprocessing.py
-src/labeling.py
-src/split.py
-src/train_gan.py
-src/train_baseline.py
-src/train_baseline_single.py
-src/compare_gan_augmentation.py
-```
-
-Do not flatten dataset folders back into global `data/processed`, `models`, or
-`outputs`. Every dataset should stay isolated under its own dataset folder.
-
-Do not move large artifacts into Git. Keep `.gitkeep` files, but leave raw data,
-processed data, checkpoints, and output artifacts ignored unless Git LFS is
-explicitly requested.
-
-If checking whether the current local setup is healthy, run:
-
-```bash
-python3 scripts/check_setup.py --dataset dreamer
+python -m pytest -q tests                 # full suite (slow on CPU)
+python -m pytest -q tests/test_splits.py tests/test_metrics_stats.py tests/test_data.py  # fast
 ```
