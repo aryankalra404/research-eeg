@@ -242,8 +242,14 @@ def importance_heatmap(matrix: pd.DataFrame, path: Path, xlabel: str) -> None:
 
 def _emotiv_info():
     import mne
+    import warnings
     info = mne.create_info(list(C.CHANNELS), C.SFREQ, "eeg")
-    info.set_montage("standard_1020")
+    # MNE >= 1.13 renames "standard_1020" to "colin27_1020" (old name removed in 1.14).
+    available = mne.channels.get_builtin_montages()
+    name = "colin27_1020" if "colin27_1020" in available else "standard_1020"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        info.set_montage(name)
     return info
 
 
