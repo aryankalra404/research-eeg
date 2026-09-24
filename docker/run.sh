@@ -11,11 +11,13 @@
 #
 # Long runs: DETACH=1 docker/run.sh benchmark --config configs/benchmark.yaml
 #            docker logs -f stewbench      (safe to close the SSH session)
+#            NAME=aug DETACH=1 docker/run.sh augment ...   (second run in parallel)
 set -euo pipefail
 
 IMAGE="${IMAGE:-stewbench:latest}"
 NGC_TAG="${NGC_TAG:-26.07-py3}"
-GPUS="${GPUS:-all}"              # e.g. GPUS='"device=1"' to pin one GPU
+GPUS="${GPUS:-all}"
+NAME="${NAME:-stewbench}"        # container name for DETACH=1 runs              # e.g. GPUS='"device=1"' to pin one GPU
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 mounts=(
@@ -30,9 +32,13 @@ common=(--gpus "$GPUS" --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
 
 run() {
   if [[ "${DETACH:-0}" == "1" ]]; then
-    docker rm -f stewbench >/dev/null 2>&1 || true
-    docker run -d --name stewbench "${common[@]}" "$IMAGE" "$@"
-    echo "Started. Follow with: docker logs -f stewbench"
+    if [[ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" == "true" ]]; then
+      echo "A run named '$NAME' is still running. Wait for it, or start another with NAME=<other> ..." >&2
+      exit 1
+    fi
+    docker rm "$NAME" >/dev/null 2>&1 || true
+    docker run -d --name "$NAME" "${common[@]}" "$IMAGE" "$@"
+    echo "Started. Follow with: docker logs -f $NAME"
   else
     docker run --rm -it "${common[@]}" "$IMAGE" "$@"
   fi
