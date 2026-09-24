@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Helper for running the STEW benchmark inside the NGC-based container.
 #
-#   docker/run.sh build            build the image (NGC_TAG=25.01-py3 by default)
+#   docker/run.sh build            build the image (NGC_TAG=26.07-py3 by default)
 #   docker/run.sh check            GPU + dataset check
 #   docker/run.sh smoke            full pipeline on a tiny synthetic fixture
 #   docker/run.sh test             unit tests
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 IMAGE="${IMAGE:-stewbench:latest}"
-NGC_TAG="${NGC_TAG:-25.01-py3}"
+NGC_TAG="${NGC_TAG:-26.07-py3}"
 GPUS="${GPUS:-all}"              # e.g. GPUS='"device=1"' to pin one GPU
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

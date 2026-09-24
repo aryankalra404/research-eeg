@@ -1,11 +1,12 @@
 # STEW benchmark image on top of NVIDIA's NGC PyTorch container.
 #
 # Pick the NGC tag that matches the workstation's NVIDIA driver (run `nvidia-smi`):
-#   driver >= 570  ->  25.01-py3  (CUDA 12.8, default below)
+#   driver >= 570  ->  25.01-py3  (CUDA 12.8)
+#   Verified on the VIT RTX A4000 workstation (driver 580): 26.07-py3 (default, CUDA forward-compat)
 #   driver >= 580  ->  25.09-py3 or newer (CUDA 13.x)
 #   driver  < 570  ->  24.12-py3 or older (check the NGC release notes)
 # Build:  docker build -f docker/Dockerfile -t stewbench:latest --build-arg NGC_TAG=25.01-py3 .
-ARG NGC_TAG=25.01-py3
+ARG NGC_TAG=26.07-py3
 FROM nvcr.io/nvidia/pytorch:${NGC_TAG}
 
 ENV PYTHONUNBUFFERED=1 \

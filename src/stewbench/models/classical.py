@@ -11,6 +11,7 @@ import itertools
 
 import numpy as np
 from sklearn.base import clone
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -101,8 +102,12 @@ def build_classical(name: str, seed: int = 0) -> ClassicalModel:
         return ClassicalModel("spectral", _scaled(LogisticRegression(max_iter=5000)),
                               {"logisticregression__C": C_grid})
     if name == "bp_svm":
-        return ClassicalModel("spectral", _scaled(SVC(kernel="rbf", probability=True, random_state=seed)),
-                              {"svc__C": [0.1, 1.0, 10.0], "svc__gamma": ["scale", 0.001]})
+        # Platt-scaled probabilities via cross-validation (replaces the deprecated
+        # SVC(probability=True), removed in scikit-learn 1.11).
+        svm = CalibratedClassifierCV(SVC(kernel="rbf", random_state=seed), method="sigmoid", cv=5, ensemble=False)
+        return ClassicalModel("spectral", _scaled(svm),
+                              {"calibratedclassifiercv__estimator__C": [0.1, 1.0, 10.0],
+                               "calibratedclassifiercv__estimator__gamma": ["scale", 0.001]})
     if name == "bp_rf":
         return ClassicalModel("spectral", RandomForestClassifier(
             n_estimators=500, n_jobs=-1, random_state=seed), {"min_samples_leaf": [1, 5, 20]})
