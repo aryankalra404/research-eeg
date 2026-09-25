@@ -67,3 +67,33 @@ def test_strict_loader_rejects_incomplete_dataset(fixture_raw):
     from stewbench.data.raw import load_stew
     with pytest.raises(ValueError):
         load_stew(fixture_raw, strict=True)
+
+
+def test_default_cache_key_unchanged_by_exclude_channels_field():
+    import hashlib
+    import json
+    from dataclasses import asdict
+    config = PreprocessConfig()
+    legacy = {k: v for k, v in asdict(config).items() if k != "exclude_channels"}
+    expected = hashlib.sha1(json.dumps(legacy, sort_keys=True).encode()).hexdigest()[:10]
+    assert config.cache_key() == expected
+    assert PreprocessConfig(exclude_channels=["F7"]).cache_key() != expected
+
+
+def test_excluded_channels_carry_no_information(fixture_raw):
+    from stewbench.data.preprocess import preprocess_recordings
+    from stewbench.data.raw import load_stew
+    config = PreprocessConfig(exclude_channels=["F7", "T8"])
+    w = preprocess_recordings(load_stew(fixture_raw, strict=False), config)
+    for channel in ("F7", "T8"):
+        assert np.all(w.X[:, C.CHANNELS.index(channel)] == 0)
+        assert np.all(window_zscore(w.X)[:, C.CHANNELS.index(channel)] == 0)
+    assert np.any(w.X[:, C.CHANNELS.index("F8")] != 0)
+
+
+def test_unknown_excluded_channel_is_rejected():
+    from stewbench.settings import ExperimentConfig, validate
+    config = ExperimentConfig(models=["bp_lr"])
+    config.preprocess.exclude_channels = ["Cz"]
+    with pytest.raises(ValueError):
+        validate(config)

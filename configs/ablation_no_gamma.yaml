@@ -1,0 +1,53 @@
+# Artifact-robustness ablation. The task-vs-rest effects at F7/F8/T7/T8 span all bands
+# (incl. gamma), suggesting ocular/muscle contributions. Compare with benchmark_main:
+# if accuracy stays close, the models do not merely detect eye/muscle activity.
+# This variant: low-pass at 30 Hz (removes gamma / most EMG).
+name: ablation_no_gamma
+seeds:
+- 0
+- 1
+- 2
+models:
+- bp_lr
+- bp_svm
+- bp_lda
+- riemann_ts_lr
+- eegnet
+- eegtcnet
+- atcnet
+- tsception
+- shallowconvnet
+preprocess:
+  bandpass_hz:
+  - 0.5
+  - 30.0
+  filter_order: 4
+  window_seconds: 4.0
+  window_overlap: 0.5
+  trim_seconds: 0.0
+  artifact_mad_k: 60.0
+protocol:
+  scheme: group_kfold
+  n_folds: 10
+  fold_seed: 2024
+  inner_val_fraction: 0.15
+input:
+  normalization: window_zscore
+  alignment: none
+training:
+  max_epochs: 100
+  patience: 15
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 3
+  label_smoothing: 0.0
+  grad_clip_norm: 1.0
+  monitor: val_loss
+  amp: true
+  deterministic: true
+tune_classical: true
+interpretability: true
+save_checkpoints: false

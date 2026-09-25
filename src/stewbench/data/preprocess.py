@@ -84,6 +84,8 @@ def preprocess_recordings(recordings: list[RawRecording], config: PreprocessConf
     by_subject: dict[int, list[tuple[int, np.ndarray, np.ndarray]]] = {}
     for recording in recordings:
         filtered = bandpass(recording.data, config, sfreq)
+        for channel in config.exclude_channels:
+            filtered[C.CHANNELS.index(channel)] = 0.0
         if trim:
             filtered = filtered[:, trim:filtered.shape[1] - trim]
         windows, starts = sliding_windows(filtered, window, step)
@@ -149,7 +151,12 @@ def load_windows(config: PreprocessConfig, raw_dir=None, cache_dir=None, strict:
         return windows
     with np.load(path, allow_pickle=False) as data:
         stored = json.loads(str(data["config_json"]))
-        if stored != json.loads(json.dumps(asdict(config))):
+        expected = json.loads(json.dumps(asdict(config)))
+        # Caches written before `exclude_channels` existed have no such key.
+        if not expected.get("exclude_channels"):
+            expected.pop("exclude_channels", None)
+            stored.pop("exclude_channels", None)
+        if stored != expected:
             raise ValueError(f"{path} was built with a different preprocessing config: {stored}")
         return WindowSet(
             X=data["X"], y=data["y"], subject=data["subject"], start=data["start"],

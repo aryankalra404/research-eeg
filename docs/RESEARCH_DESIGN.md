@@ -50,6 +50,17 @@ Many published STEW accuracies above 90% use window-level random splits;
 compare only with papers using leave-subject-out protocols (use
 `configs/benchmark_loso.yaml`) and say so explicitly.
 
+## Artifact confound (RQ4 follow-up)
+
+In STEW the largest task-vs-rest effects include broadband increases at F7/F8
+and T8 (delta through gamma). These sites are closest to the eyes and temporal
+muscles, and SIMKAP involves visual search, so part of the contrast is likely
+ocular/EMG activity. The three `ablation_*artifact*`/`no_gamma`/
+`no_frontotemporal` configs remove gamma, zero F7/F8/T7/T8, or both. Report
+the accuracy change relative to `benchmark_main` on the same folds; a small drop
+supports a neural rather than artifactual basis. Zeroed channels also change
+which windows are rejected, so state that the window sets differ slightly.
+
 ## What to report (checklist)
 
 - Dataset: 48 subjects, 14 channels, 128 Hz, labels = experimental condition

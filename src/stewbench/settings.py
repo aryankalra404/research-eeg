@@ -27,9 +27,16 @@ class PreprocessConfig:
     # Reject windows whose peak-to-peak amplitude on any channel exceeds
     # median + k * MAD of that subject's windows (class-agnostic). None = off.
     artifact_mad_k: float | None = 60.0
+    # Ablation: channels zeroed after filtering (e.g. ["F7", "F8", "T7", "T8"]
+    # to test reliance on ocular / muscle artifacts). Zeroed channels carry no
+    # information for any model while every architecture stays unchanged.
+    exclude_channels: list[str] = field(default_factory=list)
 
     def cache_key(self) -> str:
-        payload = json.dumps(asdict(self), sort_keys=True).encode()
+        values = asdict(self)
+        if not values["exclude_channels"]:
+            values.pop("exclude_channels")  # keeps keys of existing caches valid
+        payload = json.dumps(values, sort_keys=True).encode()
         return hashlib.sha1(payload).hexdigest()[:10]
 
 
@@ -184,6 +191,10 @@ def validate(config: ExperimentConfig) -> None:
         raise ValueError(f"Unknown protocol scheme {config.protocol.scheme!r}")
     if config.input.normalization not in {"window_zscore", "none"}:
         raise ValueError(f"Unknown normalization {config.input.normalization!r}")
+    from .constants import CHANNELS
+    unknown = set(config.preprocess.exclude_channels) - set(CHANNELS)
+    if unknown:
+        raise ValueError(f"Unknown channels in exclude_channels: {sorted(unknown)}")
     if config.input.alignment not in {"none", "euclidean"}:
         raise ValueError(f"Unknown alignment {config.input.alignment!r}")
     if not 0 < config.protocol.inner_val_fraction < 0.5:

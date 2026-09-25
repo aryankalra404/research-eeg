@@ -59,6 +59,9 @@ pitfalls, the paper checklist and references.
 | `configs/benchmark_loso.yaml` | leave-one-subject-out, for comparison with published STEW numbers |
 | `configs/ablation_euclidean_alignment.yaml` | transductive Euclidean Alignment ablation |
 | `configs/ablation_window_2s.yaml` | 2 s windows |
+| `configs/ablation_no_gamma.yaml` | artifact robustness: 0.5–30 Hz (removes gamma / most EMG) |
+| `configs/ablation_no_frontotemporal.yaml` | artifact robustness: F7/F8/T7/T8 zeroed (eye / temporal-muscle sites) |
+| `configs/ablation_artifact_robust.yaml` | both of the above |
 | `configs/augmentation.yaml` | augmentation × generator × training-subject budget study |
 
 ## Protocol notes
