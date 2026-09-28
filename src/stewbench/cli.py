@@ -5,6 +5,7 @@
     neuro        task-vs-rest band-power statistics + topomaps
     benchmark    run the model benchmark (resumable)
     augment      run the augmentation study (resumable)
+    robust       Model E: artifact-counterfactual consistency training (resumable)
     report       build tables/figures for a finished experiment
     smoke        whole pipeline on a tiny synthetic fixture (sanity check)
     models       list registered models
@@ -100,10 +101,20 @@ def cmd_augment(args):
     return 0
 
 
+def cmd_robust(args):
+    from .experiments.robust import run_robust
+    config = _config(args)
+    run_robust(config, _out(args, config), device=args.device, raw_dir=args.raw_dir, verbose=args.verbose)
+    return 0
+
+
 def cmd_report(args):
     from .reporting.report import augmentation_report, benchmark_report, neuro_report
     target = Path(args.dir)
-    if args.kind == "benchmark":
+    if args.kind == "robust":
+        from .experiments.robust import robust_report
+        robust_report(target)
+    elif args.kind == "benchmark":
         benchmark_report(target)
     elif args.kind == "augment":
         augmentation_report(target)
@@ -174,9 +185,10 @@ def main(argv=None) -> int:
     add("benchmark", cmd_benchmark).add_argument("--models", nargs="+", default=None,
                                                  help="subset of models (default: config)")
     add("augment", cmd_augment)
+    add("robust", cmd_robust)
     rep = sub.add_parser("report")
     rep.set_defaults(fn=cmd_report)
-    rep.add_argument("kind", choices=("benchmark", "augment", "neuro"))
+    rep.add_argument("kind", choices=("benchmark", "augment", "neuro", "robust"))
     rep.add_argument("dir")
     add("smoke", cmd_smoke, config=False).add_argument("--models", nargs="+", default=None)
     sub.add_parser("models").set_defaults(fn=cmd_models)

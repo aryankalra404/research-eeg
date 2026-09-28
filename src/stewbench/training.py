@@ -86,9 +86,15 @@ def train_deep(model_name: str, X_train: np.ndarray, y_train: np.ndarray,
                X_val: np.ndarray, y_val: np.ndarray, config: TrainingConfig, seed: int,
                device: torch.device, augment: OnlineAugment | None = None,
                X_extra: np.ndarray | None = None, y_extra: np.ndarray | None = None,
-               sfreq: int = 128, verbose: bool = False) -> TrainResult:
+               sfreq: int = 128, verbose: bool = False,
+               counterfactual: Callable[[torch.Tensor, torch.Generator], torch.Tensor] | None = None,
+               consistency_weight: float = 0.0) -> TrainResult:
     """Train one model. ``X_extra``/``y_extra`` (e.g. synthetic windows) are
-    appended to the training set only; validation stays real-only."""
+    appended to the training set only; validation stays real-only.
+
+    ``counterfactual`` (Model E): each batch is paired with label-preserving
+    counterfactual copies; both are trained with cross-entropy and, if
+    ``consistency_weight`` > 0, a symmetric KL term ties their predictions."""
     set_seed(seed, config.deterministic)
     if X_extra is not None and len(X_extra):
         X_train = np.concatenate([X_train, X_extra]).astype(np.float32)
@@ -139,9 +145,23 @@ def train_deep(model_name: str, X_train: np.ndarray, y_train: np.ndarray,
             if augment is not None:
                 xb, target = augment(xb, yb, aug_generator)
             with _autocast(device, config.amp):
-                logits = model(xb)
-                loss = F.cross_entropy(logits.float(), target, weight=class_weight,
-                                       label_smoothing=config.label_smoothing)
+                if counterfactual is not None:
+                    x_cf = counterfactual(xb, aug_generator)
+                    both = model(torch.cat([xb, x_cf])).float()
+                    logits, logits_cf = both[: len(xb)], both[len(xb):]
+                    loss = 0.5 * (
+                        F.cross_entropy(logits, target, weight=class_weight, label_smoothing=config.label_smoothing)
+                        + F.cross_entropy(logits_cf, target, weight=class_weight,
+                                          label_smoothing=config.label_smoothing))
+                    if consistency_weight > 0:
+                        log_p, log_q = F.log_softmax(logits, 1), F.log_softmax(logits_cf, 1)
+                        symmetric_kl = 0.5 * (F.kl_div(log_q, log_p, log_target=True, reduction="batchmean")
+                                              + F.kl_div(log_p, log_q, log_target=True, reduction="batchmean"))
+                        loss = loss + consistency_weight * symmetric_kl
+                else:
+                    logits = model(xb)
+                    loss = F.cross_entropy(logits.float(), target, weight=class_weight,
+                                           label_smoothing=config.label_smoothing)
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             if config.grad_clip_norm:

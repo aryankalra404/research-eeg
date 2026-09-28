@@ -35,12 +35,13 @@ src/stewbench/
   augment/            transforms.py (online), cwgan.py, ddpm.py, quality.py
   evaluation/         metrics.py (window/recording/subject, bootstrap CIs),
                       stats.py (Friedman/Nemenyi/Wilcoxon/Holm), complexity.py
-  experiments/        benchmark.py, augmentation.py, neuro.py, common.py
+  artifacts.py        Model E artifact bank + counterfactual generator
+  experiments/        benchmark.py, augmentation.py, neuro.py, robust.py (Model E), common.py
   reporting/          tables (csv/tex/md), figures (pdf/png), report.py
   cli.py              python -m stewbench {check,preprocess,neuro,benchmark,augment,report,smoke,models}
-configs/              benchmark*.yaml, augmentation.yaml, ablation_*.yaml
+configs/              benchmark*.yaml, augmentation.yaml, ablation_*.yaml, model_e_{dev,final}.yaml
 docker/               Dockerfile (NGC PyTorch base) + run.sh helper
-docs/                 NVIDIA_NGC_GUIDE.md, RESEARCH_DESIGN.md, RESULTS.md
+docs/                 NVIDIA_NGC_GUIDE.md, RESEARCH_DESIGN.md, RESULTS.md, PRIOR_ART.md, MODEL_E_PLAN.md
 paper/                PAPER_DRAFT.md
 tests/                pytest suite (fixture-based; slow tests train models on CPU)
 ```
@@ -81,6 +82,11 @@ Outputs go to `outputs/stew/<experiment>/` (git-ignored; copy numbers into
 - [x] Ablation: artifact_robust (no gamma + F7/F8/T7/T8 zeroed)
 - [x] Ablation: no_gamma
 - [ ] Ablation: no_frontotemporal (running as of 2026-09-28)
+- [ ] **Model E (artifact-counterfactual consistency training)**: implemented
+      (`src/stewbench/artifacts.py`, `experiments/robust.py`, plan in `docs/MODEL_E_PLAN.md`).
+      Next: run `configs/model_e_dev.yaml` (dev mode, validation subjects only), iterate design there,
+      freeze, then run `configs/model_e_final.yaml` once.
+- [ ] Second dataset (e.g. COG-BCI) as untouched confirmation
 - [ ] Optional: LOSO benchmark (`configs/benchmark_loso.yaml`) for literature comparison
 - [ ] Paired per-subject test main vs. ablations (not implemented yet)
 - [ ] Paper: finish Methods numbers (window counts, rejection rates), Discussion, figures

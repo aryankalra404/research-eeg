@@ -101,6 +101,22 @@ class AugmentationConfig:
 
 
 @dataclass
+class RobustConfig:
+    """Model E (artifact-counterfactual consistency training) experiment."""
+    conditions: list[str] = field(default_factory=lambda: ["erm", "channel_dropout", "cf_aug", "acct"])
+    consistency_weight: float = 1.0
+    p_add_ocular: float = 0.5
+    p_remove_ocular: float = 0.3
+    p_emg: float = 0.5
+    magnitude: float = 1.0
+    n_ocular: int = 2
+    stress_magnitudes: list[float] = field(default_factory=lambda: [1.0, 2.0, 3.0])
+    ablate_channels: list[str] = field(default_factory=lambda: ["F7", "F8", "T7", "T8"])
+    # True: evaluate on inner-validation subjects only (test subjects untouched).
+    dev_mode: bool = True
+
+
+@dataclass
 class ExperimentConfig:
     name: str = "benchmark"
     seeds: list[int] = field(default_factory=lambda: [0, 1, 2])
@@ -116,6 +132,8 @@ class ExperimentConfig:
     # Augmentation study only: numbers of training subjects per fold for the
     # data-efficiency curve (null = all available). Subsets are nested.
     train_subject_budgets: list[int | None] = field(default_factory=lambda: [None])
+    # Model E experiment settings.
+    robust: RobustConfig = field(default_factory=RobustConfig)
     # Classical models: small grid search on inner folds of training subjects.
     tune_classical: bool = True
     # Model-agnostic interpretability (channel / band occlusion) on test folds.

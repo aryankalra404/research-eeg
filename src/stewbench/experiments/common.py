@@ -71,7 +71,8 @@ def perturbations(X_filtered: np.ndarray, seed: int):
 def run_fold(model_name: str, data: PreparedData, fold: Fold, seed: int, config: ExperimentConfig,
              device: torch.device, augment: OnlineAugment | None = None,
              X_extra: np.ndarray | None = None, y_extra: np.ndarray | None = None,
-             interpret: bool = False, verbose: bool = False) -> FoldOutput:
+             interpret: bool = False, verbose: bool = False,
+             train_kwargs: dict | None = None) -> FoldOutput:
     train, val, test = masks(data.subject, fold)
     y = data.y
     s = spec(model_name)
@@ -94,7 +95,7 @@ def run_fold(model_name: str, data: PreparedData, fold: Fold, seed: int, config:
         training = config.training_for(model_name)
         result = train_deep(model_name, data.X_input[train], y[train], data.X_input[val], y[val],
                             training, seed, device, augment=augment, X_extra=X_extra, y_extra=y_extra,
-                            sfreq=C.SFREQ, verbose=verbose)
+                            sfreq=C.SFREQ, verbose=verbose, **(train_kwargs or {}))
         model = result.model
 
         def predict(Xf):

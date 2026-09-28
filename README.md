@@ -62,6 +62,8 @@ pitfalls, the paper checklist and references.
 | `configs/ablation_no_gamma.yaml` | artifact robustness: 0.5–30 Hz (removes gamma / most EMG) |
 | `configs/ablation_no_frontotemporal.yaml` | artifact robustness: F7/F8/T7/T8 zeroed (eye / temporal-muscle sites) |
 | `configs/ablation_artifact_robust.yaml` | both of the above |
+| `configs/model_e_dev.yaml` | Model E development (validation subjects only) |
+| `configs/model_e_final.yaml` | Model E final evaluation — run once after the design is frozen |
 | `configs/augmentation.yaml` | augmentation × generator × training-subject budget study |
 
 ## Protocol notes

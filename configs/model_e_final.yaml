@@ -1,0 +1,67 @@
+# Model E final evaluation on the standard test folds. Run ONCE, after the
+# design is frozen from model_e_dev results. Never iterate on these numbers.
+name: model_e_final
+seeds:
+- 0
+- 1
+- 2
+- 3
+- 4
+models:
+- eegnet
+preprocess:
+  bandpass_hz:
+  - 0.5
+  - 45.0
+  filter_order: 4
+  window_seconds: 4.0
+  window_overlap: 0.5
+  trim_seconds: 0.0
+  artifact_mad_k: 60.0
+protocol:
+  scheme: group_kfold
+  n_folds: 10
+  fold_seed: 2024
+  inner_val_fraction: 0.15
+input:
+  normalization: window_zscore
+  alignment: none
+training:
+  max_epochs: 100
+  patience: 15
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.001
+  optimizer: adamw
+  scheduler: cosine
+  warmup_epochs: 3
+  label_smoothing: 0.0
+  grad_clip_norm: 1.0
+  monitor: val_loss
+  amp: true
+  deterministic: true
+tune_classical: true
+interpretability: false
+save_checkpoints: false
+robust:
+  conditions:
+  - erm
+  - channel_dropout
+  - cf_aug
+  - acct
+  consistency_weight: 1.0
+  p_add_ocular: 0.5
+  p_remove_ocular: 0.3
+  p_emg: 0.5
+  magnitude: 1.0
+  n_ocular: 2
+  stress_magnitudes:
+  - 1.0
+  - 2.0
+  - 3.0
+  ablate_channels:
+  - F7
+  - F8
+  - T7
+  - T8
+  dev_mode: false
