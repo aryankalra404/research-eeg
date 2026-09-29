@@ -152,3 +152,24 @@ def infer_output_size(module: nn.Module, forward_fn, input_shape) -> int:
     finally:
         module.train(was_training)
     return int(math.prod(out.shape[1:]))
+
+
+class WelchLogBandPower(nn.Module):
+    """Differentiable Welch estimate (Hann segments, 50% overlap) of log band
+    power per channel and band: more stable than a single periodogram."""
+
+    def __init__(self, n_times: int, sfreq: float = C.SFREQ, bands=None, segment_seconds: float = 2.0):
+        super().__init__()
+        bands = bands or C.FREQ_BANDS
+        self.segment = min(n_times, int(segment_seconds * sfreq))
+        self.step = max(1, self.segment // 2)
+        freqs = torch.fft.rfftfreq(self.segment, d=1.0 / sfreq)
+        masks = torch.stack([((freqs >= lo) & (freqs < hi)).float() for lo, hi in bands.values()])
+        self.register_buffer("masks", masks / masks.sum(dim=1, keepdim=True).clamp_min(1.0), persistent=False)
+        self.register_buffer("window", torch.hann_window(self.segment), persistent=False)
+
+    def forward(self, x):  # (B, C, T) -> (B, C, n_bands)
+        segments = x.float().unfold(-1, self.segment, self.step)  # (B, C, S, seg)
+        segments = segments - segments.mean(-1, keepdim=True)
+        power = (torch.fft.rfft(segments * self.window, dim=-1).abs() ** 2).mean(-2)
+        return torch.log(power @ self.masks.T + 1e-8)

@@ -30,7 +30,7 @@ src/stewbench/
   splits.py           subject folds (fixed by fold_seed) + subject-disjoint inner validation
   features.py         spectral features for classical models
   models/             registry (__init__.py), classical.py, convolutional.py,
-                      recurrent.py, attention.py, graph.py, common.py
+                      recurrent.py, attention.py, graph.py, spectral.py (SpecNet), common.py
   training.py         one uniform training recipe for all deep models
   augment/            transforms.py (online), cwgan.py, ddpm.py, quality.py
   evaluation/         metrics.py (window/recording/subject, bootstrap CIs),
@@ -84,9 +84,10 @@ Outputs go to `outputs/stew/<experiment>/` (git-ignored; copy numbers into
 - [x] Ablation: no_frontotemporal (drop is entirely from F7/F8/T7/T8; ranking flips to deep models)
 - [ ] **Model E (artifact-counterfactual consistency training)**: implemented
       (`src/stewbench/artifacts.py`, `experiments/robust.py`, plan in `docs/MODEL_E_PLAN.md`).
-      Dev rounds 1-2 done (RESULTS.md §5). Design FROZEN 2026-09-29: acct_cd@3 (consistency weight 3 +
-      channel dropout). Next: run `configs/model_e_final.yaml` ONCE (test folds, 5 seeds, EEGNet + ATCNet).
-      Do not change the design after seeing final numbers.
+      Dev rounds 1-2 done (RESULTS.md §5): best so far acct_cd@3 (consistency weight 3 + channel dropout).
+      Owner chose to keep researching before the final test (2026-09-29). Round 3 = `configs/model_e_dev_v3.yaml`:
+      acct_cd@3 on ATCNet/TSception/EEG-TCNet + new SpecNet (differentiable spectral model, models/spectral.py).
+      The final test (`configs/model_e_final.yaml`) must only run after the design is frozen; never iterate on it.
 - [ ] Second dataset (e.g. COG-BCI) as untouched confirmation
 - [ ] Optional: LOSO benchmark (`configs/benchmark_loso.yaml`) for literature comparison
 - [ ] Paired per-subject test main vs. ablations (not implemented yet)

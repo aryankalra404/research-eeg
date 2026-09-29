@@ -19,7 +19,7 @@ def test_deep_models_forward_backward(name, n_times):
 
 def test_registry_is_consistent():
     assert set(ALL_MODELS) == set(SPECS)
-    assert len(DEEP_MODELS) == 17 and len(CLASSICAL_MODELS) == 8
+    assert len(DEEP_MODELS) == 18 and len(CLASSICAL_MODELS) == 8
 
 
 def test_recurrent_directionality():

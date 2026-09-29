@@ -57,4 +57,7 @@ Do not publish or demo before a provisional filing via the VIT IPR office.
 - 2026-09-28: defaults chosen (all artifact types, EEGNet, robustness goal).
 - 2026-09-28: round 1 (dev) — consistency term is the active ingredient; channel dropout complementary.
 - 2026-09-29: round 2 (dev) — acct_cd@3 best on clean BAcc, AUC, ECE and stress; natural-artifact
-  gap unchanged. Design frozen as acct_cd@3; final run with EEGNet + ATCNet (pre-declared).
+  gap unchanged. Provisional best: acct_cd@3.
+- 2026-09-29: owner decided to continue research before the final test. Round 3 (dev): acct_cd@3 on
+  ATCNet/TSception/EEG-TCNet (generality) and SpecNet, a differentiable spectral-feature model trained
+  with ACCT (aim: feature-level accuracy with deep-model robustness).

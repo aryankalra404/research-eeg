@@ -75,6 +75,9 @@ SPECS: dict[str, ModelSpec] = {s.name: s for s in [
               "Kipf & Welling, ICLR 2017"),
     ModelSpec("dgcnn", "DGCNN", "deep", "Graph", "internal band power + learnable graph",
               "Song et al., IEEE Trans. Affect. Comput. 2018"),
+    ModelSpec("specnet", "SpecNet (differentiable spectral)", "deep", "Feature-based",
+              "internal Welch band power, ratios, asymmetry",
+              "this work (differentiable counterpart of the spectral baseline)"),
 ]}
 
 DEEP_BUILDERS = {
@@ -95,6 +98,7 @@ DEEP_BUILDERS = {
     "swin_stft": _deep("attention", "SwinSTFT"),
     "gcn": _deep("graph", "ElectrodeGCN"),
     "dgcnn": _deep("graph", "DGCNN"),
+    "specnet": _deep("spectral", "SpecNet"),
 }
 
 CLASSICAL_MODELS = tuple(n for n, s in SPECS.items() if s.kind == "classical")
