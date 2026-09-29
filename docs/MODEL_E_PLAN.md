@@ -52,3 +52,9 @@ directly, and VR headsets worn on top add more.
 Candidate technical effect: reliable workload estimation on a consumer EEG
 headset without EOG, robust to ocular/EMG and headset-induced artifacts.
 Do not publish or demo before a provisional filing via the VIT IPR office.
+
+## Decision log
+- 2026-09-28: defaults chosen (all artifact types, EEGNet, robustness goal).
+- 2026-09-28: round 1 (dev) — consistency term is the active ingredient; channel dropout complementary.
+- 2026-09-29: round 2 (dev) — acct_cd@3 best on clean BAcc, AUC, ECE and stress; natural-artifact
+  gap unchanged. Design frozen as acct_cd@3; final run with EEGNet + ATCNet (pre-declared).

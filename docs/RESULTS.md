@@ -154,3 +154,29 @@ channel_dropout ablated +0.053 (p = .0012); cf_aug n.s. → the consistency term
 the active ingredient. Caveat: the stress test uses the same artifact generator
 family as training (favours acct); round 2 adds a natural-artifact metric.
 Decision (owner): test acct + channel dropout and consistency weight 3 in round 2.
+
+### Round 2 — `model_e_dev_v2` (EEGNet, 3 seeds, 2026-09-29)
+
+| Condition | Clean BAcc | AUC | ECE | BAcc F7/F8/T7/T8 zeroed | Reliance drop | BAcc high-ocular | Natural gap | Stress×3 BAcc / flips |
+|---|---|---|---|---|---|---|---|---|
+| erm | 0.768 ± 0.007 | 0.836 | 0.064 | 0.630 | +0.139 | 0.698 | +0.107 | 0.667 / 0.245 |
+| channel_dropout | 0.778 ± 0.020 | 0.849 | 0.058 | 0.683 | +0.095 | 0.710 | +0.105 | 0.723 / 0.167 |
+| acct | 0.780 ± 0.012 | 0.854 | 0.056 | 0.663 | +0.118 | 0.716 | +0.099 | 0.744 / 0.134 |
+| acct@3 | 0.790 ± 0.011 | 0.860 | 0.046 | 0.673 | +0.117 | 0.726 | +0.099 | 0.761 / 0.106 |
+| acct_cd | 0.792 ± 0.002 | 0.871 | 0.032 | 0.711 | +0.082 | 0.718 | +0.120 | 0.778 / 0.078 |
+| **acct_cd@3** | **0.807 ± 0.008** | **0.880** | **0.030** | 0.710 | +0.098 | **0.730** | +0.117 | **0.793 / 0.070** |
+
+Paired vs. erm (Holm): acct_cd@3 clean +0.038 [+0.017, +0.060], p = .035 (only
+condition significant on clean data); ablated +0.079, p = .00059. acct_cd ablated
++0.081, p = 1.1e-6; acct@3 ablated +0.043, p = .0025.
+
+Interpretation: consistency weight 3 and adding channel dropout each help, and
+combine. Model E improves clean accuracy, calibration, robustness to channel loss
+and to injected artifacts (flips 24.5% → 7.0%). **It does NOT reduce the natural
+artifact gap** (≈ +0.10–0.12 for all conditions): accuracy rises on high- and
+low-ocular windows alike, so high-ocular windows may simply be harder/noisier
+rather than evidence of reliance. Report this honestly.
+
+**Design frozen (owner decision, 2026-09-29): acct_cd@3.** Final run
+`configs/model_e_final.yaml`: EEGNet (primary) + ATCNet (generality check),
+conditions erm / channel_dropout / cf_aug / acct@3 / acct_cd@3, 5 seeds, test folds.

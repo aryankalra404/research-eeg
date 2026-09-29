@@ -1,5 +1,8 @@
-# Model E final evaluation on the standard test folds. Run ONCE, after the
-# design is frozen from model_e_dev results. Never iterate on these numbers.
+# Model E FINAL evaluation on the standard test folds (dev_mode: false). Run ONCE.
+# Design frozen 2026-09-29 from dev rounds 1-2 (validation subjects only):
+#   final method = acct_cd@3 (counterfactual consistency, weight 3, + channel dropout).
+# Other conditions are the pre-declared controls / component ablations.
+# EEGNet = primary model (developed on); ATCNet = pre-declared generality check (never tuned).
 name: model_e_final
 seeds:
 - 0
@@ -9,6 +12,7 @@ seeds:
 - 4
 models:
 - eegnet
+- atcnet
 preprocess:
   bandpass_hz:
   - 0.5
@@ -48,7 +52,8 @@ robust:
   - erm
   - channel_dropout
   - cf_aug
-  - acct
+  - acct@3
+  - acct_cd@3
   consistency_weight: 1.0
   p_add_ocular: 0.5
   p_remove_ocular: 0.3

@@ -84,9 +84,9 @@ Outputs go to `outputs/stew/<experiment>/` (git-ignored; copy numbers into
 - [x] Ablation: no_frontotemporal (drop is entirely from F7/F8/T7/T8; ranking flips to deep models)
 - [ ] **Model E (artifact-counterfactual consistency training)**: implemented
       (`src/stewbench/artifacts.py`, `experiments/robust.py`, plan in `docs/MODEL_E_PLAN.md`).
-      Round 1 done (see RESULTS.md §5: acct best clean + stress; channel dropout best on channel removal).
-      Next: round 2 `configs/model_e_dev_v2.yaml` (acct_cd, weight 3, natural-artifact gap), then freeze
-      the design and run `configs/model_e_final.yaml` once (update its conditions first).
+      Dev rounds 1-2 done (RESULTS.md §5). Design FROZEN 2026-09-29: acct_cd@3 (consistency weight 3 +
+      channel dropout). Next: run `configs/model_e_final.yaml` ONCE (test folds, 5 seeds, EEGNet + ATCNet).
+      Do not change the design after seeing final numbers.
 - [ ] Second dataset (e.g. COG-BCI) as untouched confirmation
 - [ ] Optional: LOSO benchmark (`configs/benchmark_loso.yaml`) for literature comparison
 - [ ] Paired per-subject test main vs. ablations (not implemented yet)
