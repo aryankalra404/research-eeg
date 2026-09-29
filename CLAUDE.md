@@ -81,11 +81,12 @@ Outputs go to `outputs/stew/<experiment>/` (git-ignored; copy numbers into
 - [x] Augmentation study (468 runs)
 - [x] Ablation: artifact_robust (no gamma + F7/F8/T7/T8 zeroed)
 - [x] Ablation: no_gamma
-- [ ] Ablation: no_frontotemporal (running as of 2026-09-28)
+- [ ] Ablation: no_frontotemporal (results not yet copied into RESULTS.md)
 - [ ] **Model E (artifact-counterfactual consistency training)**: implemented
       (`src/stewbench/artifacts.py`, `experiments/robust.py`, plan in `docs/MODEL_E_PLAN.md`).
-      Next: run `configs/model_e_dev.yaml` (dev mode, validation subjects only), iterate design there,
-      freeze, then run `configs/model_e_final.yaml` once.
+      Round 1 done (see RESULTS.md §5: acct best clean + stress; channel dropout best on channel removal).
+      Next: round 2 `configs/model_e_dev_v2.yaml` (acct_cd, weight 3, natural-artifact gap), then freeze
+      the design and run `configs/model_e_final.yaml` once (update its conditions first).
 - [ ] Second dataset (e.g. COG-BCI) as untouched confirmation
 - [ ] Optional: LOSO benchmark (`configs/benchmark_loso.yaml`) for literature comparison
 - [ ] Paired per-subject test main vs. ablations (not implemented yet)

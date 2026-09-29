@@ -134,3 +134,20 @@ class information (TSTR 0.71 vs 0.60).
 - Total windows after rejection and per-class rejection rates (`docker/run.sh preprocess`).
 - `ablation_no_frontotemporal` results.
 - Paired per-subject tests main vs. ablations.
+
+## 5. Model E development (DEV MODE: inner-validation subjects only; not for the paper's final table)
+
+### Round 1 — `model_e_dev` (EEGNet, 3 seeds, 2026-09-28)
+
+| Condition | Clean BAcc | AUC | ECE | BAcc F7/F8/T7/T8 zeroed | Reliance drop | Stress×1 BAcc / flips | Stress×2 | Stress×3 |
+|---|---|---|---|---|---|---|---|---|
+| erm | 0.768 ± 0.007 | 0.836 | 0.064 | 0.630 | +0.139 | 0.752 / 0.076 | 0.707 / 0.175 | 0.667 / 0.245 |
+| channel_dropout | 0.778 ± 0.020 | 0.849 | 0.058 | 0.683 | +0.095 | 0.771 / 0.048 | 0.748 / 0.110 | 0.723 / 0.167 |
+| cf_aug | 0.768 ± 0.007 | 0.839 | 0.061 | 0.635 | +0.133 | 0.766 / 0.042 | 0.752 / 0.097 | 0.732 / 0.151 |
+| acct | 0.780 ± 0.012 | 0.854 | 0.056 | 0.663 | +0.118 | 0.776 / 0.037 | 0.765 / 0.082 | 0.744 / 0.134 |
+
+Paired vs. erm (Holm): acct clean +0.012 (p = .14), acct ablated +0.032 (p = .048);
+channel_dropout ablated +0.053 (p = .0012); cf_aug n.s. → the consistency term is
+the active ingredient. Caveat: the stress test uses the same artifact generator
+family as training (favours acct); round 2 adds a natural-artifact metric.
+Decision (owner): test acct + channel dropout and consistency weight 3 in round 2.

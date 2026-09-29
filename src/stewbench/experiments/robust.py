@@ -38,7 +38,42 @@ from ..training import predict_proba
 from ..utils import get_device, read_json, write_json
 from .common import prepare, run_fold
 
-CONDITIONS = ("erm", "channel_dropout", "cf_aug", "acct")
+CONDITIONS = ("erm", "channel_dropout", "cf_aug", "acct", "acct_cd")
+
+
+def parse_condition(condition: str, default_weight: float) -> tuple[str, float]:
+    """``acct@3`` -> ("acct", 3.0). The weight suffix applies to acct variants."""
+    base, _, weight = condition.partition("@")
+    if base not in CONDITIONS:
+        raise ValueError(f"Unknown condition {condition}")
+    return base, float(weight) if weight else default_weight
+
+
+def ocular_proxy(X_filtered: np.ndarray, sfreq: int = C.SFREQ) -> np.ndarray:
+    """Natural ocular-activity score per window: mean log 0.5-4 Hz power over
+    the frontal pole/lateral frontal sites (AF3, AF4, F7, F8). Computed from
+    the recorded data only; no synthetic artifacts involved."""
+    from scipy.signal import welch
+    idx = [C.CHANNELS.index(ch) for ch in ("AF3", "AF4", "F7", "F8")]
+    freqs, psd = welch(X_filtered[:, idx], fs=sfreq, nperseg=min(256, X_filtered.shape[-1]), axis=-1)
+    band = (freqs >= 0.5) & (freqs <= 4.0)
+    return np.log(psd[..., band].mean(-1) + 1e-12).mean(-1)
+
+
+def artifact_strata(y, subject, proxy, quantile: float = 0.25):
+    """Masks of the most / least ocular-laden windows within every
+    (subject, class) cell, so both strata keep both classes of every subject."""
+    high = np.zeros(len(y), dtype=bool)
+    low = np.zeros(len(y), dtype=bool)
+    for sid in np.unique(subject):
+        for c in (0, 1):
+            cell = np.flatnonzero((subject == sid) & (y == c))
+            if len(cell) < 4:
+                continue
+            values = proxy[cell]
+            high[cell[values >= np.quantile(values, 1 - quantile)]] = True
+            low[cell[values <= np.quantile(values, quantile)]] = True
+    return high, low
 
 
 def dev_fold(fold: Fold, fraction: float, seed: int) -> Fold:
@@ -68,6 +103,9 @@ def run_robust(config: ExperimentConfig, out_dir: Path, device=None, raw_dir=Non
     folds = make_folds(windows.subject, config.protocol, config.protocol.fold_seed)
     if rc.dev_mode:
         folds = [dev_fold(f, config.protocol.inner_val_fraction, config.protocol.fold_seed) for f in folds]
+    for condition in rc.conditions:
+        parse_condition(condition, rc.consistency_weight)
+    proxy = ocular_proxy(windows.X)
     ablate = [C.CHANNELS.index(ch) for ch in rc.ablate_channels]
     X_ablated_filtered = windows.X.copy()
     X_ablated_filtered[:, ablate] = 0.0
@@ -96,14 +134,13 @@ def run_robust(config: ExperimentConfig, out_dir: Path, device=None, raw_dir=Non
                     bank = fit_artifact_bank(data.X_input[train], n_ocular=rc.n_ocular, seed=seed)
                     cf = ArtifactCounterfactual(bank, rc.p_add_ocular, rc.p_remove_ocular, rc.p_emg, rc.magnitude)
                     augment, train_kwargs = None, {}
-                    if condition == "channel_dropout":
+                    base, weight = parse_condition(condition, rc.consistency_weight)
+                    if base in ("channel_dropout", "acct_cd"):
                         augment = make_online("channel_dropout", 0.5, 0.5)
-                    elif condition == "cf_aug":
+                    if base == "cf_aug":
                         train_kwargs = {"counterfactual": cf, "consistency_weight": 0.0}
-                    elif condition == "acct":
-                        train_kwargs = {"counterfactual": cf, "consistency_weight": rc.consistency_weight}
-                    elif condition != "erm":
-                        raise ValueError(f"Unknown condition {condition}")
+                    elif base in ("acct", "acct_cd"):
+                        train_kwargs = {"counterfactual": cf, "consistency_weight": weight}
                     out = run_fold(model_name, data, fold, seed, config, device, augment=augment,
                                    train_kwargs=train_kwargs, verbose=verbose)
                     amp = config.training_for(model_name).amp
@@ -139,6 +176,7 @@ def run_robust(config: ExperimentConfig, out_dir: Path, device=None, raw_dir=Non
                                for m in rc.stress_magnitudes},
                     "folds": fold_info,
                     "predictions": {"index": np.flatnonzero(tested), "y": y, "subject": s,
+                                    "ocular_proxy": proxy[tested],
                                     "p_clean": p_clean[tested], "p_ablated": p_ablated[tested]},
                 }
                 write_json(path, result)
@@ -169,14 +207,27 @@ def robust_report(out_dir: Path) -> Path:
         return {sid: float(np.mean(v)) for sid, v in values.items()}
 
     rows, tests = [], []
-    for (model, condition), rs in sorted(results.items(), key=lambda kv: (kv[0][0], CONDITIONS.index(kv[0][1])
-                                                                         if kv[0][1] in CONDITIONS else 99)):
+    def order(kv):
+        base, _, weight = kv[0][1].partition("@")
+        return kv[0][0], CONDITIONS.index(base) if base in CONDITIONS else 99, weight
+    for (model, condition), rs in sorted(results.items(), key=order):
         clean = [r["metrics"]["window"]["balanced_accuracy"] for r in rs]
         ablated = [r["ablated_metrics"]["window"]["balanced_accuracy"] for r in rs]
         auc = [r["metrics"]["window"]["roc_auc"] for r in rs]
         ece = [r["metrics"]["window"]["ece"] for r in rs]
         mags = sorted(rs[0]["stress"], key=float)
+        gaps, bacc_high = [], []
+        for r in rs:
+            pred = r["predictions"]
+            if "ocular_proxy" not in pred:
+                continue
+            y, sub, p1 = (np.asarray(pred[k]) for k in ("y", "subject", "p_clean"))
+            high, low = artifact_strata(y, sub, np.asarray(pred["ocular_proxy"]))
+            bacc_high.append(_bacc(y[high], p1[high]))
+            gaps.append(_bacc(y[low], p1[low]) - bacc_high[-1])
         row = {"model": model, "condition": condition, "n_seeds": len(rs),
+               "bacc_high_ocular": float(np.mean(bacc_high)) if bacc_high else float("nan"),
+               "natural_artifact_gap": float(np.mean(gaps)) if gaps else float("nan"),
                "bacc_clean": np.mean(clean), "bacc_clean_sd": np.std(clean, ddof=1) if len(rs) > 1 else 0.0,
                "auc": np.mean(auc), "ece": np.mean(ece),
                "bacc_ablated": np.mean(ablated), "reliance_drop": np.mean(clean) - np.mean(ablated)}
@@ -197,12 +248,14 @@ def robust_report(out_dir: Path) -> Path:
         t["p_holm"] = adjusted[i]
 
     mags = sorted({k.split("_")[-1] for r in rows for k in r if k.startswith("bacc_stress_")}, key=float)
-    header = ["Model", "Condition", "Clean BAcc", "AUC", "ECE", "BAcc F7/F8/T7/T8 zeroed", "Reliance drop"] + \
+    header = ["Model", "Condition", "Clean BAcc", "AUC", "ECE", "BAcc F7/F8/T7/T8 zeroed", "Reliance drop",
+              "BAcc high-ocular windows", "Natural artifact gap (low−high)"] + \
              [f"Stress×{m} BAcc / flips" for m in mags]
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     for r in rows:
         cells = [r["model"], r["condition"], f"{r['bacc_clean']:.3f} ± {r['bacc_clean_sd']:.3f}",
-                 f"{r['auc']:.3f}", f"{r['ece']:.3f}", f"{r['bacc_ablated']:.3f}", f"{r['reliance_drop']:+.3f}"]
+                 f"{r['auc']:.3f}", f"{r['ece']:.3f}", f"{r['bacc_ablated']:.3f}", f"{r['reliance_drop']:+.3f}",
+                 f"{r['bacc_high_ocular']:.3f}", f"{r['natural_artifact_gap']:+.3f}"]
         cells += [f"{r[f'bacc_stress_{m}']:.3f} / {r[f'flip_rate_{m}']:.3f}" for m in mags]
         lines.append("| " + " | ".join(cells) + " |")
     test_lines = ["| Model | Condition | Evaluated on | Δ BAcc vs erm [95% CI] | p (Holm) |", "|---|---|---|---|---|"]

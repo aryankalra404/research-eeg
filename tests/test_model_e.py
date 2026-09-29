@@ -75,3 +75,25 @@ def test_consistency_training_runs():
                         TrainingConfig(max_epochs=2, patience=2, batch_size=16), 0, torch.device("cpu"),
                         counterfactual=cf, consistency_weight=1.0)
     assert result.epochs_run == 2
+
+
+def test_condition_parsing():
+    import pytest
+    from stewbench.experiments.robust import parse_condition
+    assert parse_condition("acct@3", 1.0) == ("acct", 3.0)
+    assert parse_condition("acct_cd", 1.0) == ("acct_cd", 1.0)
+    with pytest.raises(ValueError):
+        parse_condition("bogus", 1.0)
+
+
+def test_artifact_strata_keep_both_classes_per_subject():
+    from stewbench.experiments.robust import artifact_strata
+    rng = np.random.default_rng(0)
+    subject = np.repeat(np.arange(1, 6), 40)
+    y = np.tile(np.repeat([0, 1], 20), 5)
+    proxy = rng.normal(size=len(y)) + y  # class-correlated, as in real data
+    high, low = artifact_strata(y, subject, proxy)
+    assert not (high & low).any()
+    for sid in range(1, 6):
+        for mask in (high, low):
+            assert set(y[mask & (subject == sid)]) == {0, 1}
