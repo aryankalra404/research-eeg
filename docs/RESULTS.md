@@ -73,19 +73,23 @@ contributions (eye-adjacent / temporal-muscle sites).
 
 | Model | Main | No gamma (0.5–30 Hz) | F7/F8/T7/T8 zeroed + no gamma | No F7/F8/T7/T8 only |
 |---|---|---|---|---|
-| Spectral + SVM | 0.829 | 0.825 | 0.785 | TODO |
-| Spectral + LR | 0.829 | 0.824 | 0.776 | TODO |
-| Spectral + sLDA | 0.827 | 0.819 | 0.769 | TODO |
-| Riemann TS + LR | 0.795 | 0.799 | 0.777 | TODO |
-| ATCNet | 0.803 | 0.797 | 0.777 | TODO |
-| EEGNet-8,2 | 0.801 | 0.795 | 0.770 | TODO |
-| EEG-TCNet | 0.797 | 0.789 | 0.769 | TODO |
-| TSception | 0.794 | 0.805 | 0.770 | TODO |
-| ShallowConvNet | 0.785 | 0.786 | 0.759 | TODO |
+| Spectral + SVM | 0.829 | 0.825 | 0.785 | 0.778 |
+| Spectral + LR | 0.829 | 0.824 | 0.776 | 0.777 |
+| Spectral + sLDA | 0.827 | 0.819 | 0.769 | 0.770 |
+| Riemann TS + LR | 0.795 | 0.799 | 0.777 | 0.776 |
+| ATCNet | 0.803 | 0.797 | 0.777 | 0.783 |
+| EEGNet-8,2 | 0.801 | 0.795 | 0.770 | 0.780 |
+| EEG-TCNet | 0.797 | 0.789 | 0.769 | 0.775 |
+| TSception | 0.794 | 0.805 | 0.770 | 0.780 |
+| ShallowConvNet | 0.785 | 0.786 | 0.759 | 0.768 |
 
 - Artifact-robust Friedman χ² = 13.59, p = 0.093 → models no longer differ.
-- Gamma removal changes BAcc by ≤ 1 point; the drop comes from the eye-adjacent
-  channels. Main-vs-ablation comparisons use slightly different window sets
+- Gamma removal changes BAcc by ≤ 1 point; zeroing F7/F8/T7/T8 alone reproduces the
+  whole drop → the inflation comes from the eye-adjacent channels, not EMG/gamma.
+- Spectral models lose 5.1–5.7 points without F7/F8/T7/T8; deep models only 1.4–2.1.
+  Without those channels the ranking flips: ATCNet 0.783, EEGNet 0.780, TSception
+  0.780 ≥ spectral SVM 0.778 / LR 0.777 → the "features beat deep nets" result is
+  partly driven by ocular information at eye-adjacent sites. Main-vs-ablation comparisons use slightly different window sets
   (rejection depends on the channels kept).
 
 ## 4. Augmentation study (3 seeds, 10 folds, generators trained per fold)
@@ -132,7 +136,6 @@ class information (TSTR 0.71 vs 0.60).
 
 ## TODO numbers for the paper
 - Total windows after rejection and per-class rejection rates (`docker/run.sh preprocess`).
-- `ablation_no_frontotemporal` results.
 - Paired per-subject tests main vs. ablations.
 
 ## 5. Model E development (DEV MODE: inner-validation subjects only; not for the paper's final table)

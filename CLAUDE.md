@@ -81,7 +81,7 @@ Outputs go to `outputs/stew/<experiment>/` (git-ignored; copy numbers into
 - [x] Augmentation study (468 runs)
 - [x] Ablation: artifact_robust (no gamma + F7/F8/T7/T8 zeroed)
 - [x] Ablation: no_gamma
-- [ ] Ablation: no_frontotemporal (results not yet copied into RESULTS.md)
+- [x] Ablation: no_frontotemporal (drop is entirely from F7/F8/T7/T8; ranking flips to deep models)
 - [ ] **Model E (artifact-counterfactual consistency training)**: implemented
       (`src/stewbench/artifacts.py`, `experiments/robust.py`, plan in `docs/MODEL_E_PLAN.md`).
       Round 1 done (see RESULTS.md §5: acct best clean + stress; channel dropout best on channel removal).
